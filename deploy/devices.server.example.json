@@ -1,0 +1,26 @@
+[
+  {
+    "id": "workstation",
+    "name": "Main PC",
+    "label": "COMMAND STATION",
+    "type": "pc",
+    "endpoint": "http://100.64.0.11:4243",
+    "accent": "green"
+  },
+  {
+    "id": "dashboard-host",
+    "name": "Home Server",
+    "label": "PRIMARY NODE",
+    "type": "server",
+    "endpoint": "http://127.0.0.1:4242",
+    "accent": "cyan"
+  },
+  {
+    "id": "game-server",
+    "name": "Game Server",
+    "label": "EDGE NODE",
+    "type": "server",
+    "endpoint": "http://100.64.0.12:4242",
+    "accent": "amber"
+  }
+]

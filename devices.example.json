@@ -1,0 +1,26 @@
+[
+  {
+    "id": "workstation",
+    "name": "Main PC",
+    "label": "COMMAND STATION",
+    "type": "pc",
+    "endpoint": "local",
+    "accent": "green"
+  },
+  {
+    "id": "home-server",
+    "name": "Home Server",
+    "label": "PRIMARY NODE",
+    "type": "server",
+    "endpoint": "http://100.64.0.10:4242",
+    "accent": "cyan"
+  },
+  {
+    "id": "game-server",
+    "name": "Game Server",
+    "label": "EDGE NODE",
+    "type": "server",
+    "endpoint": "http://server.example.ts.net:4242",
+    "accent": "amber"
+  }
+]

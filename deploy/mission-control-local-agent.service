@@ -1,0 +1,13 @@
+[Unit]
+Description=Mission Control Telemetry Agent
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=MISSION_CONTROL_PORT=4243
+ExecStart=/usr/bin/python3 %h/.local/share/mission-control/telemetry_agent.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
