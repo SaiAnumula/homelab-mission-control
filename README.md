@@ -7,8 +7,9 @@ The project is designed for a trusted LAN or encrypted overlay network such as T
 ## Features
 
 - Responsive device grid that automatically fills the available screen
-- CPU, GPU, memory, and storage utilization meters
+- CPU, GPU, memory, and primary-storage utilization meters
 - CPU, GPU, memory, storage, operating-system, and uptime details
+- Expandable per-device drive inventory with mount, usage, and optional SMART health
 - AMD GPU utilization through Linux sysfs and NVIDIA utilization through `nvidia-smi`
 - Docker container health, state, and uptime
 - Configurable systemd service monitoring, including game servers
@@ -58,6 +59,7 @@ Each monitored Linux machine runs `agent/telemetry_agent.py`. The dashboard host
 - Docker CLI and Docker-socket permission for container monitoring
 - Optional: `lspci` for GPU identification
 - Optional: `nvidia-smi` for NVIDIA GPU utilization
+- Optional: `smartctl` from smartmontools for drive-health reporting
 
 Windows is supported by the Node/systeminformation endpoint but not by the lightweight Python agent or included systemd units.
 
@@ -137,6 +139,12 @@ The agent listens on `0.0.0.0:4242` by default. Override it in the unit with:
 Environment=MISSION_CONTROL_PORT=4243
 ```
 
+Some PCI identifiers cover multiple closely related GPU models. Set an exact display name when automatic identification is ambiguous:
+
+```ini
+Environment="MISSION_CONTROL_GPU_NAME=Radeon RX 9070"
+```
+
 Verify it locally:
 
 ```bash
@@ -187,6 +195,46 @@ systemctl --user restart mission-control-agent.service
 ```
 
 Monitoring is read-only. Mission Control does not start, stop, or restart the reported services.
+
+## Storage and drive health
+
+The primary storage meter follows the physical disk containing `/`. Select the storage row on a device card to expand any additional physical drives. Virtual devices such as loop and zram disks are omitted; unmounted physical disks are listed with usage marked unavailable.
+
+Drive capacities use decimal units, matching manufacturer labels such as 2 TB. Memory capacity is normalized to common installed-RAM sizes while utilization continues to use Linux's actual usable-memory value.
+
+SMART health is an optional enhancement; drive inventory, capacity, and utilization work without it. When `smartctl` is installed and readable by the telemetry-agent user, Mission Control reports the device's overall SMART result. Otherwise the dashboard displays `SMART N/A`.
+
+Install the optional tool with the package manager for the monitored host, for example:
+
+```bash
+# Debian or Ubuntu
+sudo apt install smartmontools
+
+# Arch Linux
+sudo pacman -S smartmontools
+```
+
+After installation, verify access as the same user that runs the telemetry agent:
+
+```bash
+smartctl -H -j /dev/sda
+```
+
+Some systems restrict physical-drive diagnostics to root even when `smartctl` is installed. Do not grant the agent unrestricted sudo access merely to obtain SMART data. If health reporting is required, use narrowly scoped device permissions or an administrator-reviewed rule appropriate for that host; Mission Control intentionally treats inaccessible health data as optional.
+
+For a dedicated Linux host, the agent can optionally invoke `smartctl` through non-interactive sudo by setting:
+
+```ini
+Environment=MISSION_CONTROL_SMARTCTL_SUDO=1
+```
+
+This setting does not grant access by itself. An administrator must separately approve exact read-only commands for the specific drives being monitored. For example, `/etc/sudoers.d/mission-control-smart` could contain:
+
+```sudoers
+mission-control-user ALL=(root) NOPASSWD: /usr/sbin/smartctl -H -j /dev/sda, /usr/sbin/smartctl -H -j /dev/sdb
+```
+
+Replace the username and device paths for the host, validate the file with `visudo`, and do not use wildcards or grant general `smartctl`, shell, or sudo access.
 
 ## Tailscale usage
 

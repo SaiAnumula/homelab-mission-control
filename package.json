@@ -7,6 +7,7 @@
     "dev": "concurrently \"node --watch server.js\" \"vite --host 0.0.0.0\"",
     "server": "node server.js",
     "build": "vite build",
+    "test": "python3 -m unittest discover -s tests",
     "start": "NODE_ENV=production node server.js",
     "preview": "vite preview --host 0.0.0.0"
   },

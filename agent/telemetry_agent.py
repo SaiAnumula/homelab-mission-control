@@ -2,8 +2,10 @@
 """Dependency-free Mission Control telemetry agent for Linux hosts."""
 
 import json
+import math
 import os
 import platform
+import re
 import shutil
 import subprocess
 import time
@@ -43,6 +45,15 @@ def memory():
     return total, used_pct
 
 
+def installed_memory_label(total_bytes):
+    """Present Linux's slightly reduced MemTotal as installed RAM capacity."""
+    gib = total_bytes / 1073741824
+    standard_sizes = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024]
+    nearest = min(standard_sizes, key=lambda size: abs(size - gib))
+    value = nearest if abs(nearest - gib) / max(nearest, 1) <= 0.1 else round(gib)
+    return f"{value} GB"
+
+
 def cpu_details():
     model = "Unknown CPU"
     physical = set()
@@ -62,14 +73,40 @@ def cpu_details():
     return model, f"{cores}C / {threads}T"
 
 
+def clean_gpu_name(raw_name):
+    """Reduce verbose PCI descriptions to the useful consumer GPU model."""
+    bracketed = re.findall(r"\[([^]]+)]", raw_name)
+    for candidate in reversed(bracketed):
+        if re.search(r"Radeon|GeForce|Arc\s|UHD Graphics|Iris|HD Graphics", candidate, re.IGNORECASE):
+            return candidate
+    cleaned = re.sub(r"^.*?(?:VGA compatible controller|3D controller)(?:\s*\[[^]]+])?:?\s*", "", raw_name)
+    cleaned = re.sub(r"^(?:Advanced Micro Devices, Inc\.\s*)?\[AMD/ATI]\s*", "", cleaned)
+    cleaned = re.sub(r"^NVIDIA Corporation\s*", "", cleaned)
+    return cleaned.strip() or "Integrated / unavailable"
+
+
 def gpu_details():
+    configured_name = os.environ.get("MISSION_CONTROL_GPU_NAME", "").strip()
     model = "Integrated / unavailable"
-    if shutil.which("lspci"):
-        result = subprocess.run(["lspci"], capture_output=True, text=True, timeout=3)
-        for line in result.stdout.splitlines():
-            if "VGA compatible controller" in line or "3D controller" in line:
-                model = line.split(": ", 1)[-1]
-                break
+    if shutil.which("nvidia-smi"):
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                model = result.stdout.splitlines()[0].strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if model == "Integrated / unavailable" and shutil.which("lspci"):
+        try:
+            result = subprocess.run(["lspci", "-nn"], capture_output=True, text=True, timeout=3)
+            for line in result.stdout.splitlines():
+                if "VGA compatible controller" in line or "3D controller" in line:
+                    model = clean_gpu_name(line)
+                    break
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     load = None
     for metric in Path("/sys/class/drm").glob("card[0-9]*/device/gpu_busy_percent"):
         try:
@@ -88,7 +125,98 @@ def gpu_details():
                 load = round(float(value))
         except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
             pass
-    return model, load
+    return configured_name or model, load
+
+
+def decimal_capacity(size_bytes):
+    if size_bytes >= 1_000_000_000_000:
+        value, unit = size_bytes / 1_000_000_000_000, "TB"
+    else:
+        value, unit = size_bytes / 1_000_000_000, "GB"
+    precision = 0 if value >= 10 or math.isclose(value, round(value), abs_tol=0.05) else 1
+    return f"{value:.{precision}f} {unit}"
+
+
+def drive_health(path):
+    """Return a conservative SMART status without ever requiring elevated access."""
+    smartctl = shutil.which("smartctl")
+    if not smartctl:
+        return "unavailable"
+    command = [smartctl, "-H", "-j", path]
+    if os.environ.get("MISSION_CONTROL_SMARTCTL_SUDO", "").lower() in ("1", "true", "yes"):
+        command = ["sudo", "-n", *command]
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True, timeout=4,
+        )
+        payload = json.loads(result.stdout or "{}")
+        passed = payload.get("smart_status", {}).get("passed")
+        critical = payload.get("nvme_smart_health_information_log", {}).get("critical_warning")
+        if passed is False:
+            return "failing"
+        if isinstance(critical, int) and critical:
+            return "warning"
+        if passed is True or critical == 0:
+            return "healthy"
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        pass
+    return "unavailable"
+
+
+def _walk_devices(devices):
+    for device in devices:
+        yield device
+        yield from _walk_devices(device.get("children", []))
+
+
+def storage_details():
+    """Return physical disks, with the root filesystem's disk listed first."""
+    if not shutil.which("lsblk"):
+        disk = shutil.disk_usage("/")
+        return [{
+            "name": "Root filesystem", "device": "/", "model": "",
+            "capacity": decimal_capacity(disk.total), "size_bytes": disk.total,
+            "mount": "/", "used_bytes": disk.used,
+            "usage": round(100 * disk.used / disk.total), "health": "unavailable", "primary": True,
+        }]
+    try:
+        result = subprocess.run(
+            ["lsblk", "--json", "--bytes", "--paths", "--output",
+             "NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS,MODEL,TRAN"],
+            capture_output=True, text=True, timeout=4,
+        )
+        payload = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return []
+
+    drives = []
+    for disk in payload.get("blockdevices", []):
+        if disk.get("type") != "disk" or disk.get("name", "").startswith(("/dev/loop", "/dev/zram")):
+            continue
+        descendants = list(_walk_devices(disk.get("children", [])))
+        mountpoints = []
+        for item in [disk, *descendants]:
+            mountpoints.extend(mount for mount in (item.get("mountpoints") or []) if mount and mount != "[SWAP]")
+        mountpoints = sorted(set(mountpoints), key=lambda mount: (mount != "/", len(mount), mount))
+        primary = "/" in mountpoints
+        mount = "/" if primary else (mountpoints[0] if mountpoints else None)
+        usage = used = None
+        if mount:
+            try:
+                totals = shutil.disk_usage(mount)
+                used = totals.used
+                usage = round(100 * totals.used / totals.total) if totals.total else 0
+            except OSError:
+                pass
+        path = disk.get("name", "")
+        drives.append({
+            "name": Path(path).name, "device": path,
+            "model": (disk.get("model") or "").strip(),
+            "capacity": decimal_capacity(int(disk.get("size") or 0)),
+            "size_bytes": int(disk.get("size") or 0), "mount": mount,
+            "used_bytes": used, "usage": usage, "health": drive_health(path), "primary": primary,
+        })
+    return sorted(drives, key=lambda drive: (not drive["primary"], drive["name"]))
 
 
 def docker_containers():
@@ -140,7 +268,8 @@ def monitored_services():
 
 def stats():
     total_memory, memory_pct = memory()
-    disk = shutil.disk_usage("/")
+    drives = storage_details()
+    primary_drive = next((drive for drive in drives if drive["primary"]), drives[0] if drives else None)
     cpu_model, cores = cpu_details()
     gpu_model, gpu_load = gpu_details()
     os_release = {}
@@ -155,17 +284,18 @@ def stats():
         "specs": {
             "cpu": cpu_model,
             "cores": cores,
-            "memory": f"{total_memory / 1073741824:.0f} GB",
-            "disk": f"{disk.total / 1073741824:.0f} GB",
+            "memory": installed_memory_label(total_memory),
+            "disk": primary_drive["capacity"] if primary_drive else "Unavailable",
             "gpu": gpu_model,
         },
         "usage": {
             "cpu": cpu_usage(),
             "memory": memory_pct,
-            "disk": round(100 * disk.used / disk.total),
+            "disk": primary_drive["usage"] if primary_drive else None,
             "gpu": gpu_load,
             "temperature": None,
         },
+        "drives": drives,
         "containers": docker_containers(),
         "services": monitored_services(),
     }
