@@ -204,6 +204,8 @@ Drive capacities use decimal units, matching manufacturer labels such as 2 TB. M
 
 SMART health is an optional enhancement; drive inventory, capacity, and utilization work without it. When `smartctl` is installed and readable by the telemetry-agent user, Mission Control reports the device's overall SMART result. Otherwise the dashboard displays `SMART N/A`.
 
+Health probes run concurrently across all physical disks and each one is capped by a timeout, so a drive that stops responding cannot stall the whole stats round or take the node offline. A drive whose SMART result cannot be read reports `SMART N/A` -- the dashboard only shows failing or warning when the drive itself reports it.
+
 Install the optional tool with the package manager for the monitored host, for example:
 
 ```bash

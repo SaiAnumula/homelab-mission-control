@@ -9,8 +9,11 @@ import re
 import shutil
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+MAX_HEALTH_WORKERS = 8
 
 
 def read(path, default=""):
@@ -138,7 +141,13 @@ def decimal_capacity(size_bytes):
 
 
 def drive_health(path):
-    """Return a conservative SMART status without ever requiring elevated access."""
+    """Return a conservative SMART status without ever requiring elevated access.
+
+    Health is best-effort: ``unavailable`` means the SMART result could not be
+    read (not that the drive is failing). Genuine transport failures propagate
+    to the caller so a concurrent collector can count them without killing the
+    rest of the payload.
+    """
     smartctl = shutil.which("smartctl")
     if not smartctl:
         return "unavailable"
@@ -146,21 +155,46 @@ def drive_health(path):
     if os.environ.get("MISSION_CONTROL_SMARTCTL_SUDO", "").lower() in ("1", "true", "yes"):
         command = ["sudo", "-n", *command]
     try:
-        result = subprocess.run(
-            command, capture_output=True, text=True, timeout=4,
-        )
+        result = subprocess.run(command, capture_output=True, text=True, timeout=4)
         payload = json.loads(result.stdout or "{}")
-        passed = payload.get("smart_status", {}).get("passed")
-        critical = payload.get("nvme_smart_health_information_log", {}).get("critical_warning")
-        if passed is False:
-            return "failing"
-        if isinstance(critical, int) and critical:
-            return "warning"
-        if passed is True or critical == 0:
-            return "healthy"
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"SMART health check timed out for {path}") from error
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"SMART health check returned invalid data for {path}") from error
+    passed = payload.get("smart_status", {}).get("passed")
+    critical = payload.get("nvme_smart_health_information_log", {}).get("critical_warning")
+    if passed is False:
+        return "failing"
+    if isinstance(critical, int) and critical:
+        return "warning"
+    if passed is True or critical == 0:
+        return "healthy"
     return "unavailable"
+
+
+def collect_drive_health(devices):
+    """Measure every physical disk concurrently.
+
+    Health is the slow part of ``storage_details()``: each probe can burn its
+    full four-second timeout, and a stalled disk in a large RAID used to
+    stretch the whole stats round past the dashboard's own 4 s fetch timeout,
+    which then marked the *healthy* node offline. Workers are capped like the
+    dashboard aggregator so probe time stays bounded by the slowest disk, not
+    the sum of all disks, and one bad probe is reported as ``unavailable``
+    instead of tearing down the payload for every other drive.
+    """
+    if not devices:
+        return {}
+    paths = [device.get("device", "") for device in devices]
+    with ThreadPoolExecutor(max_workers=min(len(devices), MAX_HEALTH_WORKERS)) as pool:
+        futures = [pool.submit(drive_health, path) for path in paths]
+        results = []
+        for index, future in enumerate(futures):
+            try:
+                results.append(future.result())
+            except Exception:
+                results.append("unavailable")
+    return dict(zip(paths, results))
 
 
 def _walk_devices(devices):
@@ -189,7 +223,7 @@ def storage_details():
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
         return []
 
-    drives = []
+    candidate_drives = []
     for disk in payload.get("blockdevices", []):
         if disk.get("type") != "disk" or disk.get("name", "").startswith(("/dev/loop", "/dev/zram")):
             continue
@@ -198,23 +232,33 @@ def storage_details():
         for item in [disk, *descendants]:
             mountpoints.extend(mount for mount in (item.get("mountpoints") or []) if mount and mount != "[SWAP]")
         mountpoints = sorted(set(mountpoints), key=lambda mount: (mount != "/", len(mount), mount))
-        primary = "/" in mountpoints
-        mount = "/" if primary else (mountpoints[0] if mountpoints else None)
-        usage = used = None
-        if mount:
+        candidate_drives.append({
+            "name": Path(disk.get("name", "")).name, "device": disk.get("name", ""),
+            "model": (disk.get("model") or "").strip(),
+            "capacity": decimal_capacity(int(disk.get("size") or 0)),
+            "size_bytes": int(disk.get("size") or 0),
+            "mount": "/" if "/" in mountpoints else (mountpoints[0] if mountpoints else None),
+            "primary": "/" in mountpoints, "mountpoints": mountpoints,
+        })
+    health = collect_drive_health(candidate_drives)
+    drives = []
+    for candidate in candidate_drives:
+        used = usage = None
+        if candidate["mount"]:
             try:
-                totals = shutil.disk_usage(mount)
+                totals = shutil.disk_usage(candidate["mount"])
                 used = totals.used
                 usage = round(100 * totals.used / totals.total) if totals.total else 0
             except OSError:
                 pass
-        path = disk.get("name", "")
+        candidate["used_bytes"] = used
+        candidate["usage"] = usage
+        candidate["health"] = health.get(candidate["device"], "unavailable")
         drives.append({
-            "name": Path(path).name, "device": path,
-            "model": (disk.get("model") or "").strip(),
-            "capacity": decimal_capacity(int(disk.get("size") or 0)),
-            "size_bytes": int(disk.get("size") or 0), "mount": mount,
-            "used_bytes": used, "usage": usage, "health": drive_health(path), "primary": primary,
+            "name": candidate["name"], "device": candidate["device"], "model": candidate["model"],
+            "capacity": candidate["capacity"], "size_bytes": candidate["size_bytes"],
+            "mount": candidate["mount"], "used_bytes": candidate["used_bytes"],
+            "usage": candidate["usage"], "health": candidate["health"], "primary": candidate["primary"],
         })
     return sorted(drives, key=lambda drive: (not drive["primary"], drive["name"]))
 
