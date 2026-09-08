@@ -66,7 +66,7 @@ Windows is supported by the Node/systeminformation endpoint but not by the light
 ## Development installation
 
 ```bash
-git clone https://github.com/your-account/mission-control.git
+git clone https://github.com/SaiAnumula/homelab-mission-control.git
 cd mission-control
 npm install
 cp devices.example.json devices.json
