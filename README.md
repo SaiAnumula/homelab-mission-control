@@ -7,16 +7,18 @@ The project is designed for a trusted LAN or encrypted overlay network such as T
 ## Features
 
 - Responsive device grid that automatically fills the available screen
-- CPU, GPU, memory, and primary-storage utilization meters
-- CPU, GPU, memory, storage, operating-system, and uptime details
+- CPU, GPU, VRAM, memory, primary-storage, and thermal utilization meters
+- CPU, GPU, VRAM, memory, storage, operating-system, and uptime details
+- Live network bandwidth (RX/TX) and disk I/O throughput rates
 - Expandable per-device drive inventory with mount, usage, and optional SMART health
-- AMD GPU utilization through Linux sysfs and NVIDIA utilization through `nvidia-smi`
-- Docker container health, state, and uptime
+- AMD GPU utilization & VRAM through Linux sysfs and NVIDIA utilization & VRAM through `nvidia-smi`
+- Docker container health (`healthy`, `unhealthy`, `starting`), state, and uptime
 - Configurable systemd service monitoring, including game servers
-- Online/offline detection with a ten-second automatic refresh
+- Online/offline detection with clean status reasons and ten-second automatic refresh
 - Manual refresh without restarting any monitored service
 - Lightweight Python telemetry agent with no third-party Python packages
 - Node.js development server and standalone Python production host
+- Configurable listening interface / IP (`MISSION_CONTROL_HOST`) for private network binding
 - Private remote access through Tailscale IPs or MagicDNS
 
 ## Screenshots
@@ -133,10 +135,11 @@ systemctl --user enable --now mission-control-agent.service
 sudo loginctl enable-linger "$USER"
 ```
 
-The agent listens on `0.0.0.0:4242` by default. Override it in the unit with:
+The agent listens on `0.0.0.0:4242` by default. Override port or bind host (e.g. to restrict to localhost or a Tailscale interface) in the unit with:
 
 ```ini
 Environment=MISSION_CONTROL_PORT=4243
+Environment=MISSION_CONTROL_HOST=100.64.0.10
 ```
 
 Some PCI identifiers cover multiple closely related GPU models. Set an exact display name when automatic identification is ambiguous:
@@ -167,7 +170,7 @@ systemctl --user enable --now mission-control-dashboard.service
 sudo loginctl enable-linger "$USER"
 ```
 
-The production dashboard listens on port 8080. Set `MISSION_CONTROL_DASHBOARD_PORT` in the service to choose another port. Set `MISSION_CONTROL_DEVICES` to use a configuration outside the application directory.
+The production dashboard listens on `0.0.0.0:8080`. Set `MISSION_CONTROL_DASHBOARD_PORT` to choose another port, or `MISSION_CONTROL_DASHBOARD_HOST` (or `MISSION_CONTROL_HOST`) to bind to a specific IP. Set `MISSION_CONTROL_DEVICES` to use a configuration outside the application directory.
 
 ## Docker monitoring
 

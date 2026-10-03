@@ -112,12 +112,55 @@ class FetchDeviceEndpointTests(unittest.TestCase):
         self.assertEqual(result["usage"], {"cpu": 7})
         self.assertEqual(result["name"], "Node")
 
+    def test_local_endpoint_resolves_to_local_agent(self):
+        device = {"id": "local", "name": "Local Host", "endpoint": "local"}
+        with patch.dict("os.environ", {"MISSION_CONTROL_PORT": str(self.port)}):
+            result = dashboard_server.fetch_device(device)
+        self.assertTrue(result["online"])
+        self.assertEqual(result["specs"], {"cpu": "test"})
+
     def test_unreachable_endpoint_reports_offline_with_reason(self):
         device = {"id": "dead", "name": "Dead", "endpoint": f"http://127.0.0.1:{self.dead_port}"}
         result = dashboard_server.fetch_device(device)
         self.assertFalse(result["online"])
         self.assertTrue(result["error"])
         self.assertEqual(result["usage"], {})
+
+
+class DashboardHandlerRoutingTests(unittest.TestCase):
+    def test_load_devices_handles_missing_file_safely(self):
+        from pathlib import Path
+        with patch.object(dashboard_server, "DEVICES", Path("/nonexistent/devices.json")):
+            self.assertEqual(dashboard_server.load_devices(), [])
+
+    def test_load_devices_handles_malformed_json_safely(self, tmp_path=None):
+        import tempfile
+        from pathlib import Path
+        with tempfile.NamedTemporaryFile("w+", delete=False) as f:
+            f.write("{ invalid json")
+            f.flush()
+            temp_path = Path(f.name)
+        try:
+            with patch.object(dashboard_server, "DEVICES", temp_path):
+                self.assertEqual(dashboard_server.load_devices(), [])
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def test_do_get_query_string_routing(self):
+        import urllib.request
+        server = dashboard_server.ThreadingHTTPServer(("127.0.0.1", 0), dashboard_server.Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health?cache=123")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(resp.headers.get("Content-Type"), "application/json")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
 
 
 if __name__ == "__main__":

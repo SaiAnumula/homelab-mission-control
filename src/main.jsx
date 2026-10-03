@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Activity, Box, ChevronDown, Cpu, Database, Gamepad2, Gauge, HardDrive, Laptop, MemoryStick, RefreshCw, Server, ShieldCheck, Thermometer, Wifi, WifiOff } from 'lucide-react'
+import { Activity, Box, ChevronDown, Cpu, Database, Gamepad2, Gauge, HardDrive, Laptop, Layers, MemoryStick, RefreshCw, Server, ShieldCheck, Thermometer, Wifi, WifiOff } from 'lucide-react'
 import './styles.css'
 
 const icons = { pc: Cpu, server: Server, laptop: Laptop }
@@ -11,11 +11,11 @@ function formatUptime(seconds = 0) {
   return days ? `${days}d ${hours}h` : `${hours}h ${Math.floor((seconds % 3600) / 60)}m`
 }
 
-function Meter({ label, value, Icon }) {
+function Meter({ label, value, Icon, unit = '%' }) {
   const safe = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0
   const tone = safe > 85 ? 'danger' : safe > 70 ? 'warn' : ''
   return <div className="meter">
-    <div className="meter-top"><span><Icon size={15} />{label}</span><strong>{Number.isFinite(value) ? `${safe}%` : 'N/A'}</strong></div>
+    <div className="meter-top"><span><Icon size={15} />{label}</span><strong>{Number.isFinite(value) ? `${value}${unit}` : 'N/A'}</strong></div>
     <div className="track"><i className={tone} style={{ width: `${safe}%` }} /></div>
   </div>
 }
@@ -68,26 +68,56 @@ function DeviceCard({ device, index }) {
       <div className={`status ${device.online ? '' : 'offline'}`}>{device.online ? <Wifi size={14}/> : <WifiOff size={14}/>} {device.online ? 'ONLINE' : 'OFFLINE'}</div>
     </div>
     {device.demo && <div className="demo-tag">DEMO DATA · configure endpoint to connect</div>}
-    <div className="system-line"><span>{device.os || 'System unavailable'}</span><span>UP {formatUptime(device.uptime)}</span></div>
+    <div className="system-line">
+      <span>{device.online ? (device.os || 'System unavailable') : (device.error ? `OFFLINE · ${device.error}` : 'Host unreachable')}</span>
+      <span>{device.online ? `UP ${formatUptime(device.uptime)}` : 'DISCONNECTED'}</span>
+    </div>
     <div className="spec-grid">
       <div><small>PROCESSOR</small><b><TooltipText>{device.specs?.cpu}</TooltipText></b><em>{device.specs?.cores}</em></div>
       <div><small>MEMORY</small><b>{device.specs?.memory || '—'}</b></div>
-      <div><small>GRAPHICS</small><b><TooltipText>{device.specs?.gpu}</TooltipText></b></div>
+      <div>
+        <small>GRAPHICS</small>
+        <b><TooltipText>{device.specs?.gpu}</TooltipText></b>
+        {device.specs?.vram && <em>VRAM {device.specs.vram}</em>}
+      </div>
     </div>
     <DriveDetails drives={device.drives} fallback={device.specs?.disk} />
     <div className="meters">
       <Meter label="CPU LOAD" value={usage.cpu} Icon={Cpu} />
       <Meter label="GPU LOAD" value={usage.gpu} Icon={Gauge} />
+      {Number.isFinite(usage.gpu_vram) && <Meter label="GPU VRAM" value={usage.gpu_vram} Icon={Layers} />}
       <Meter label="MEMORY" value={usage.memory} Icon={MemoryStick} />
       <Meter label="STORAGE" value={usage.disk} Icon={HardDrive} />
-      {Number.isFinite(usage.temperature) && <Meter label="THERMAL" value={usage.temperature} Icon={Thermometer} />}
+      {Number.isFinite(usage.temperature) && <Meter label="THERMAL" value={usage.temperature} Icon={Thermometer} unit="°C" />}
     </div>
+    {(usage.net_rx_rate || usage.net_tx_rate || usage.disk_read_rate || usage.disk_write_rate) && (
+      <div className="io-grid">
+        <div className="io-item" title="Network Throughput">
+          <small><Activity size={10} /> NETWORK</small>
+          <span>↓ {usage.net_rx_rate || '0 B/s'} &nbsp; ↑ {usage.net_tx_rate || '0 B/s'}</span>
+        </div>
+        <div className="io-item" title="Disk Throughput">
+          <small><HardDrive size={10} /> DISK I/O</small>
+          <span>R: {usage.disk_read_rate || '0 B/s'} &nbsp; W: {usage.disk_write_rate || '0 B/s'}</span>
+        </div>
+      </div>
+    )}
     {!!device.containers?.length && <div className="containers">
       <div className="section-title"><span><Box size={14}/> CONTAINERS</span><small>{device.containers.filter(c => c.state === 'running').length}/{device.containers.length} ACTIVE</small></div>
-      {device.containers.map((container) => <div className="container-row" key={container.name}>
-        <span className={`pulse ${container.state !== 'running' ? 'stopped' : ''}`} />
-        <b><TooltipText>{container.name}</TooltipText></b><em>{container.status || container.state}</em>
-      </div>)}
+      {device.containers.map((container) => {
+        const pulseClass = container.state !== 'running'
+          ? 'stopped'
+          : container.health === 'unhealthy'
+          ? 'unhealthy'
+          : container.health === 'starting'
+          ? 'starting'
+          : ''
+        return <div className="container-row" key={container.name}>
+          <span className={`pulse ${pulseClass}`} />
+          <b><TooltipText>{container.name}</TooltipText></b>
+          <em>{container.health ? `${container.health.toUpperCase()} · ` : ''}{container.status || container.state}</em>
+        </div>
+      })}
     </div>}
     {!!device.services?.length && <div className="containers services">
       <div className="section-title"><span><Gamepad2 size={14}/> SERVICES</span><small>{device.services.filter(s => s.state === 'active').length}/{device.services.length} ACTIVE</small></div>

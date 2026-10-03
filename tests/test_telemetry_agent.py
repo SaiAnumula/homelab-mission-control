@@ -176,5 +176,100 @@ class ConcurrentHealthTests(unittest.TestCase):
         self.assertFalse(any(d["health"] == "failing" for d in drives))
 
 
+class ProcParsingTests(unittest.TestCase):
+    @patch.object(telemetry_agent, "read", return_value="")
+    def test_cpu_sample_empty_stat_returns_zero(self, _read):
+        self.assertEqual(telemetry_agent.cpu_sample(), (0, 0))
+
+    @patch.object(telemetry_agent, "read", return_value="invalid line without colon\nMemTotal: 1024 kB\nMemAvailable: 512 kB")
+    def test_memory_ignores_lines_without_colon(self, _read):
+        total, used_pct = telemetry_agent.memory()
+        self.assertEqual(total, 1024 * 1024)
+        self.assertEqual(used_pct, 50)
+
+
+class ThermalAndGpuTests(unittest.TestCase):
+    @patch.object(telemetry_agent.Path, "glob")
+    def test_system_temperature_reads_millidegrees(self, mock_glob):
+        from unittest.mock import MagicMock
+        zone = MagicMock()
+        type_file = MagicMock()
+        type_file.exists.return_value = True
+        type_file.read_text.return_value = "x86_pkg_temp"
+        temp_file = MagicMock()
+        temp_file.read_text.return_value = "45000"
+        zone.__truediv__.side_effect = lambda name: type_file if name == "type" else temp_file
+        mock_glob.return_value = [zone]
+
+        self.assertEqual(telemetry_agent.system_temperature(), 45)
+
+    @patch.object(telemetry_agent.shutil, "which", return_value=None)
+    @patch.object(telemetry_agent.Path, "glob")
+    def test_gpu_details_ebusy_returns_zero_load(self, mock_glob, _which):
+        import errno
+        from unittest.mock import MagicMock
+        metric = MagicMock()
+        err = OSError()
+        err.errno = errno.EBUSY
+        metric.read_text.side_effect = err
+        mock_glob.return_value = [metric]
+
+        _name, load = telemetry_agent.gpu_details()
+        self.assertEqual(load, 0)
+
+
+class ContainerAndIoTests(unittest.TestCase):
+    @patch.object(telemetry_agent.shutil, "which", return_value="/usr/bin/docker")
+    @patch.object(telemetry_agent.subprocess, "run")
+    def test_docker_containers_parses_health(self, mock_run, _which):
+        mock_run.return_value = Completed(
+            '{"Names": "web", "State": "running", "Status": "Up 2 hours (healthy)"}\n'
+            '{"Names": "db", "State": "running", "Status": "Up 5 days (unhealthy)"}\n'
+            '{"Names": "worker", "State": "running", "Status": "Up 1 hour (health: starting)"}\n'
+            '{"Names": "cache", "State": "running", "Status": "Up 3 days"}\n',
+            0,
+        )
+        containers = telemetry_agent.docker_containers()
+        self.assertEqual(len(containers), 4)
+        self.assertEqual(containers[0]["health"], "healthy")
+        self.assertEqual(containers[1]["health"], "unhealthy")
+        self.assertEqual(containers[2]["health"], "starting")
+        self.assertIsNone(containers[3]["health"])
+
+    def test_format_rate(self):
+        self.assertEqual(telemetry_agent.format_rate(500), "500 B/s")
+        self.assertEqual(telemetry_agent.format_rate(15_000), "15 KB/s")
+        self.assertEqual(telemetry_agent.format_rate(2_500_000), "2.5 MB/s")
+        self.assertEqual(telemetry_agent.format_rate(1_500_000_000), "1.5 GB/s")
+
+    def test_io_rates_computes_delta(self):
+        telemetry_agent._PREV_IO_SAMPLE = (time.monotonic() - 1.0, 1000, 2000, 3000, 4000)
+        with patch.object(telemetry_agent, "sample_net_bytes", return_value=(2000, 4000)), \
+             patch.object(telemetry_agent, "sample_disk_bytes", return_value=(5000, 7000)):
+            rx, tx, r, w = telemetry_agent.io_rates()
+            self.assertIn("B/s", rx)
+            self.assertIn("B/s", tx)
+
+
+class AgentHandlerRoutingTests(unittest.TestCase):
+    def test_do_get_query_string_routing(self):
+        import threading
+        import urllib.request
+        server = telemetry_agent.ThreadingHTTPServer(("127.0.0.1", 0), telemetry_agent.Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health?v=123")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                self.assertEqual(resp.status, 200)
+                payload = json.loads(resp.read())
+                self.assertTrue(payload.get("ok"))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+
 if __name__ == "__main__":
     unittest.main()

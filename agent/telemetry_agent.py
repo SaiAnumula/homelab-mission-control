@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Dependency-free Mission Control telemetry agent for Linux hosts."""
 
+import errno
 import json
 import math
 import os
@@ -12,8 +13,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 MAX_HEALTH_WORKERS = 8
+_PREV_IO_SAMPLE = None  # (timestamp, rx_bytes, tx_bytes, read_bytes, write_bytes)
 
 
 def read(path, default=""):
@@ -24,7 +27,15 @@ def read(path, default=""):
 
 
 def cpu_sample():
-    fields = [int(value) for value in read("/proc/stat").splitlines()[0].split()[1:]]
+    lines = read("/proc/stat").splitlines()
+    if not lines:
+        return 0, 0
+    parts = lines[0].split()
+    if len(parts) < 5:
+        return 0, 0
+    fields = [int(value) for value in parts[1:] if value.isdigit()]
+    if len(fields) < 4:
+        return sum(fields), 0
     idle = fields[3] + (fields[4] if len(fields) > 4 else 0)
     return sum(fields), idle
 
@@ -40,8 +51,12 @@ def cpu_usage():
 def memory():
     values = {}
     for line in read("/proc/meminfo").splitlines():
+        if ":" not in line:
+            continue
         key, value = line.split(":", 1)
-        values[key] = int(value.strip().split()[0]) * 1024
+        parts = value.strip().split()
+        if parts and parts[0].isdigit():
+            values[key] = int(parts[0]) * 1024
     total = values.get("MemTotal", 0)
     available = values.get("MemAvailable", 0)
     used_pct = round(100 * (total - available) / total) if total else 0
@@ -115,7 +130,11 @@ def gpu_details():
         try:
             load = round(float(metric.read_text().strip()))
             break
-        except (OSError, ValueError):
+        except OSError as error:
+            if getattr(error, "errno", None) == errno.EBUSY:
+                load = 0
+                break
+        except ValueError:
             pass
     if load is None and shutil.which("nvidia-smi"):
         try:
@@ -129,6 +148,35 @@ def gpu_details():
         except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
             pass
     return configured_name or model, load
+
+
+def gpu_vram():
+    """Return (vram_used_bytes, vram_total_bytes) or (None, None)."""
+    for card in Path("/sys/class/drm").glob("card[0-9]*/device"):
+        used_p = card / "mem_info_vram_used"
+        total_p = card / "mem_info_vram_total"
+        if used_p.exists() and total_p.exists():
+            try:
+                used = int(used_p.read_text().strip())
+                total = int(total_p.read_text().strip())
+                if total > 0:
+                    return used, total
+            except (OSError, ValueError):
+                pass
+    if shutil.which("nvidia-smi"):
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                line = result.stdout.splitlines()[0]
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 2:
+                    return int(float(parts[0]) * 1024 * 1024), int(float(parts[1]) * 1024 * 1024)
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            pass
+    return None, None
 
 
 def decimal_capacity(size_bytes):
@@ -276,14 +324,119 @@ def docker_containers():
         containers = []
         for line in result.stdout.splitlines():
             item = json.loads(line)
+            status_str = item.get("Status", "")
+            health = None
+            if "(healthy)" in status_str:
+                health = "healthy"
+            elif "(unhealthy)" in status_str:
+                health = "unhealthy"
+            elif "(health: starting)" in status_str:
+                health = "starting"
             containers.append({
                 "name": item.get("Names", "unknown"),
                 "state": item.get("State", "unknown").lower(),
-                "status": item.get("Status", ""),
+                "status": status_str,
+                "health": health,
             })
         return containers
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
         return []
+
+
+def system_temperature():
+    """Return CPU/package temperature in degrees Celsius, or None."""
+    candidates = []
+    for path in sorted(Path("/sys/class/thermal").glob("thermal_zone*")):
+        try:
+            z_type = (path / "type").read_text().strip().lower() if (path / "type").exists() else ""
+            raw = (path / "temp").read_text().strip()
+            if raw.lstrip("-").isdigit():
+                val = int(raw)
+                deg = round(val / 1000) if abs(val) > 200 else val
+                if 0 <= deg <= 135:
+                    score = 2 if any(k in z_type for k in ("pkg", "core", "cpu", "k10", "soc")) else 1
+                    candidates.append((score, deg))
+        except (OSError, PermissionError, ValueError):
+            pass
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    for path in Path("/sys/class/hwmon").glob("hwmon*/temp*_input"):
+        try:
+            raw = path.read_text().strip()
+            if raw.lstrip("-").isdigit():
+                val = int(raw)
+                deg = round(val / 1000) if abs(val) > 200 else val
+                if 0 <= deg <= 135:
+                    return deg
+        except (OSError, PermissionError, ValueError):
+            pass
+    return None
+
+
+def format_rate(bytes_per_sec):
+    if bytes_per_sec >= 1_000_000_000:
+        return f"{bytes_per_sec / 1_000_000_000:.1f} GB/s"
+    if bytes_per_sec >= 1_000_000:
+        return f"{bytes_per_sec / 1_000_000:.1f} MB/s"
+    if bytes_per_sec >= 1_000:
+        return f"{bytes_per_sec / 1_000:.0f} KB/s"
+    return f"{int(bytes_per_sec)} B/s"
+
+
+def sample_net_bytes():
+    rx, tx = 0, 0
+    for line in read("/proc/net/dev").splitlines():
+        if ":" not in line:
+            continue
+        iface, data = line.split(":", 1)
+        name = iface.strip()
+        if name.startswith(("lo", "docker", "veth", "br-")):
+            continue
+        parts = data.split()
+        if len(parts) >= 9:
+            try:
+                rx += int(parts[0])
+                tx += int(parts[8])
+            except ValueError:
+                pass
+    return rx, tx
+
+
+def sample_disk_bytes():
+    read_b, write_b = 0, 0
+    for line in read("/proc/diskstats").splitlines():
+        parts = line.split()
+        if len(parts) >= 14:
+            dev = parts[2]
+            if (dev.startswith(("sd", "vd", "hd")) and dev[-1].isalpha()) or (dev.startswith("nvme") and "p" not in dev) or (dev.startswith("mmcblk") and "p" not in dev):
+                try:
+                    read_b += int(parts[5]) * 512
+                    write_b += int(parts[9]) * 512
+                except ValueError:
+                    pass
+    return read_b, write_b
+
+
+def io_rates():
+    global _PREV_IO_SAMPLE
+    now = time.monotonic()
+    cur_rx, cur_tx = sample_net_bytes()
+    cur_dr, cur_dw = sample_disk_bytes()
+    if _PREV_IO_SAMPLE is not None:
+        prev_time, prev_rx, prev_tx, prev_dr, prev_dw = _PREV_IO_SAMPLE
+        elapsed = now - prev_time
+        if 0.5 <= elapsed <= 60:
+            _PREV_IO_SAMPLE = (now, cur_rx, cur_tx, cur_dr, cur_dw)
+            return (
+                format_rate(max(0, (cur_rx - prev_rx) / elapsed)),
+                format_rate(max(0, (cur_tx - prev_tx) / elapsed)),
+                format_rate(max(0, (cur_dr - prev_dr) / elapsed)),
+                format_rate(max(0, (cur_dw - prev_dw) / elapsed)),
+            )
+    _PREV_IO_SAMPLE = (now, cur_rx, cur_tx, cur_dr, cur_dw)
+    return ("0 B/s", "0 B/s", "0 B/s", "0 B/s")
 
 
 def monitored_services():
@@ -316,28 +469,40 @@ def stats():
     primary_drive = next((drive for drive in drives if drive["primary"]), drives[0] if drives else None)
     cpu_model, cores = cpu_details()
     gpu_model, gpu_load = gpu_details()
+    vram_used, vram_total = gpu_vram()
+    vram_label = f"{vram_used / 1073741824:.1f} / {vram_total / 1073741824:.0f} GB" if vram_total else None
+    vram_pct = round(100 * vram_used / vram_total) if vram_total else None
+    net_rx, net_tx, disk_r, disk_w = io_rates()
     os_release = {}
     for line in read("/etc/os-release").splitlines():
         if "=" in line:
             key, value = line.split("=", 1)
             os_release[key] = value.strip('"')
+    uptime_raw = read("/proc/uptime", "0").split()
+    uptime = float(uptime_raw[0]) if uptime_raw else 0.0
     return {
         "online": True,
         "os": os_release.get("PRETTY_NAME", platform.platform()),
-        "uptime": float(read("/proc/uptime", "0").split()[0]),
+        "uptime": uptime,
         "specs": {
             "cpu": cpu_model,
             "cores": cores,
             "memory": installed_memory_label(total_memory),
             "disk": primary_drive["capacity"] if primary_drive else "Unavailable",
             "gpu": gpu_model,
+            "vram": vram_label,
         },
         "usage": {
             "cpu": cpu_usage(),
             "memory": memory_pct,
             "disk": primary_drive["usage"] if primary_drive else None,
             "gpu": gpu_load,
-            "temperature": None,
+            "gpu_vram": vram_pct,
+            "temperature": system_temperature(),
+            "net_rx_rate": net_rx,
+            "net_tx_rate": net_tx,
+            "disk_read_rate": disk_r,
+            "disk_write_rate": disk_w,
         },
         "drives": drives,
         "containers": docker_containers(),
@@ -347,10 +512,11 @@ def stats():
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path not in ("/api/agent/stats", "/api/health"):
+        path = urlsplit(self.path).path.rstrip("/") or "/"
+        if path not in ("/api/agent/stats", "/api/health"):
             self.send_error(404)
             return
-        payload = {"ok": True} if self.path == "/api/health" else stats()
+        payload = {"ok": True} if path == "/api/health" else stats()
         body = json.dumps(payload).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -363,6 +529,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    host = os.environ.get("MISSION_CONTROL_HOST", "0.0.0.0").strip() or "0.0.0.0"
     port = int(os.environ.get("MISSION_CONTROL_PORT", "4242"))
-    print(f"Mission Control agent listening on 0.0.0.0:{port}", flush=True)
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    print(f"Mission Control agent listening on {host}:{port}", flush=True)
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
