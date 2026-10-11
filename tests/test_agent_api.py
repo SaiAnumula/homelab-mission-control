@@ -5,9 +5,36 @@ import json
 import threading
 import time
 import unittest
+from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
 from agent import telemetry_agent as agent
+
+
+class StatsCompositionTests(unittest.TestCase):
+    def test_stats_maps_fixture_collectors_and_missing_storage(self):
+        fixtures = {
+            "memory": (16 * 2**30, 30), "storage_details": [],
+            "cpu_details": ("Fixture CPU", "4C / 8T"), "gpu_details": ("Fixture GPU", 20),
+            "gpu_vram": (2 * 2**30, 8 * 2**30), "io_rates": ("1 MB/s", "2 MB/s", "3 MB/s", "4 MB/s"),
+            "cpu_usage": 10, "system_temperature": None, "docker_containers": [], "monitored_services": [],
+        }
+        def fixture_read(path):
+            return 'PRETTY_NAME="Fixture OS"' if path == "/etc/os-release" else "1234 0"
+        with ExitStack() as stack:
+            for name, value in fixtures.items():
+                stack.enter_context(patch.object(agent, name, return_value=value))
+            stack.enter_context(patch.object(agent, "read", side_effect=lambda path, *_args: fixture_read(path)))
+            fallback = stack.enter_context(patch.object(agent.platform, "platform", side_effect=AssertionError("Unneeded platform probe")))
+            data = agent.stats()
+            fallback.assert_not_called()
+        self.assertTrue(data["online"])
+        self.assertEqual(data["os"], "Fixture OS")
+        self.assertEqual(data["uptime"], 1234)
+        self.assertEqual(data["specs"]["disk"], "Unavailable")
+        self.assertIsNone(data["usage"]["disk"])
+        self.assertEqual(data["usage"]["gpu_vram"], 25)
+        self.assertIn("collectedAt", data)
 
 
 class AgentCacheTests(unittest.TestCase):

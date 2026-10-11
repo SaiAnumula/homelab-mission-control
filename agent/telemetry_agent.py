@@ -496,7 +496,7 @@ def stats():
     return {
         "online": True,
         "collectedAt": datetime.now(timezone.utc).isoformat(),
-        "os": os_release.get("PRETTY_NAME", platform.platform()),
+        "os": os_release.get("PRETTY_NAME") or platform.platform(),
         "uptime": uptime,
         "specs": {
             "cpu": cpu_model,
