@@ -74,9 +74,22 @@ class TelemetryValidationTests(unittest.TestCase):
                 self.assertIn("Invalid telemetry", result["error"])
 
     def test_truncated_and_oversized_responses_report_down(self):
-        for body in (b'{"online":', b"x" * (dashboard.MAX_RESPONSE_BYTES + 1)):
+        for body in (b'{"online":', b'{"online": true, "uptime": NaN}',
+                     b"x" * (dashboard.MAX_RESPONSE_BYTES + 1)):
             with patch.object(dashboard.urllib.request, "urlopen", return_value=io.BytesIO(body)):
                 self.assertEqual(dashboard.fetch_device(DEVICE)["status"], "down")
+
+    def test_nested_display_fields_and_nonfinite_numbers_are_rejected(self):
+        for extra in ({"specs": {"cpu": {}}}, {"usage": {"cpu": []}},
+                      {"containers": [{"name": {}}]}, {"services": [{"state": []}]},
+                      {"drives": [{"capacity": {}}]}, {"uptime": float("inf")}):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.fetch({"online": True, **extra})["status"], "down")
+
+    def test_network_error_does_not_disclose_endpoint(self):
+        with patch.object(dashboard.urllib.request, "urlopen", side_effect=OSError("private fixture URL")):
+            result = dashboard.fetch_device(DEVICE)
+        self.assertNotIn("private", result["error"])
 
     def test_unhealthy_services_containers_and_drives_are_degraded(self):
         for extra in ({"services": [{"state": "failed"}]},

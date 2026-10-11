@@ -2,6 +2,7 @@
 """Static Mission Control host and remote telemetry aggregator."""
 
 import json
+import math
 import os
 import threading
 import time
@@ -22,7 +23,7 @@ MAX_FETCH_WORKERS = 8
 CACHE_SECONDS = 10
 MAX_RESPONSE_BYTES = 1024 * 1024
 PUBLIC_DEVICE_FIELDS = ("id", "name", "label", "type", "accent")
-TELEMETRY_FIELDS = ("online", "os", "uptime", "specs", "usage", "drives", "containers", "services", "error")
+TELEMETRY_FIELDS = ("online", "os", "uptime", "specs", "usage", "drives", "containers", "services", "error", "collectedAt")
 
 
 class ConfigurationError(ValueError):
@@ -80,12 +81,30 @@ def validate_stats(stats):
         if key in stats and (not isinstance(stats[key], list)
                              or any(not isinstance(item, dict) for item in stats[key])):
             raise ValueError(f"Invalid telemetry: {key} must be an array of objects")
-    for key in ("os", "error"):
+    for key in ("os", "error", "collectedAt"):
         if key in stats and not isinstance(stats[key], str):
             raise ValueError(f"Invalid telemetry: {key} must be a string")
     if "uptime" in stats and (isinstance(stats["uptime"], bool)
-                             or not isinstance(stats["uptime"], (float, int))):
+                             or not isinstance(stats["uptime"], (float, int))
+                             or not math.isfinite(stats["uptime"])):
         raise ValueError("Invalid telemetry: uptime must be numeric")
+    for key, value in stats.get("specs", {}).items():
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"Invalid telemetry: specs.{key} must be a string or null")
+    for key, value in stats.get("usage", {}).items():
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float, str))
+                                  or isinstance(value, (int, float)) and not math.isfinite(value)):
+            raise ValueError(f"Invalid telemetry: usage.{key} must be a finite number, string or null")
+    string_fields = {
+        "drives": ("name", "device", "model", "capacity", "mount", "health"),
+        "containers": ("name", "state", "status", "health"),
+        "services": ("id", "name", "state", "detail"),
+    }
+    for collection, fields in string_fields.items():
+        for item in stats.get(collection, []):
+            for key in fields:
+                if key in item and item[key] is not None and not isinstance(item[key], str):
+                    raise ValueError(f"Invalid telemetry: {collection}.{key} must be a string or null")
     return {key: stats[key] for key in TELEMETRY_FIELDS if key in stats}
 
 
@@ -99,6 +118,10 @@ def telemetry_status(stats):
         for container in stats.get("containers", [])
     ) or any(drive.get("health") in ("warning", "failing") for drive in stats.get("drives", []))
     return "degraded" if degraded else "up"
+
+
+def reject_constant(_value):
+    raise ValueError("Invalid telemetry: non-finite JSON number")
 
 
 def fetch_device(device):
@@ -116,11 +139,13 @@ def fetch_device(device):
             body = response.read(MAX_RESPONSE_BYTES + 1)
             if len(body) > MAX_RESPONSE_BYTES:
                 raise ValueError("Telemetry response exceeds size limit")
-            stats = validate_stats(json.loads(body))
+            stats = validate_stats(json.loads(body, parse_constant=reject_constant))
         return {**public_device(device), **stats, "status": telemetry_status(stats),
                 "checkedAt": datetime.now(timezone.utc).isoformat()}
-    except (OSError, ValueError, urllib.error.URLError) as error:
+    except ValueError as error:
         return failed_device(device, error)
+    except (OSError, urllib.error.URLError):
+        return failed_device(device, "Telemetry endpoint unavailable or timed out")
 
 
 def load_devices():
