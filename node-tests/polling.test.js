@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createPoller, deviceStatus, validateTelemetry } from '../src/polling.js'
-const data = { devices: [{ id: 'fixture', online: true }] }
+const data = { devices: [{ id: 'fixture', name: 'Fixture', online: true }] }
 function harness(fetcher) {
   const timers = new Map(), events = []; let id = 0
   const poller = createPoller({ fetcher, onData: d => events.push(['data', d]), onError: e => events.push(['error', e]), onLoading: l => events.push(['loading', l]), schedule: (fn, delay) => { timers.set(++id, { fn, delay }); return id }, cancel: key => timers.delete(key) })
@@ -33,7 +33,7 @@ test('HTTP and malformed data fail visibly', async () => {
     const h = harness(async () => response); await h.poller.refresh(); assert.equal(h.events[1][0], 'error'); h.poller.stop()
   }
   assert.throws(() => validateTelemetry({ devices: [null] }))
-  for (const malformed of [{ services: [{ name: 'fixture' }] }, { drives: {} }, { containers: [null] }, { specs: { cpu: {} } }]) assert.throws(() => validateTelemetry({ devices: [{ id: 'fixture', online: true, ...malformed }] }))
+  for (const malformed of [{ services: [{ name: 'fixture' }] }, { drives: {} }, { containers: [null] }, { specs: { cpu: {} } }]) assert.throws(() => validateTelemetry({ devices: [{ id: 'fixture', name: 'Fixture', online: true, ...malformed }] }))
 })
 test('status distinguishes down, degraded, stale and fresh up', () => {
   const fixture = { online: true, checkedAt: new Date(100000).toISOString() }
@@ -42,6 +42,8 @@ test('status distinguishes down, degraded, stale and fresh up', () => {
   assert.equal(deviceStatus(fixture, false, 125001), 'stale')
   assert.equal(deviceStatus({ ...fixture, online: false }, false, 100001), 'down')
   assert.equal(deviceStatus({ ...fixture, containers: [{ state: 'running', health: 'unhealthy' }] }, false, 100001), 'degraded')
+  assert.equal(deviceStatus({ ...fixture, collectedAt: new Date(1).toISOString() }, false, 100001), 'stale')
+  assert.equal(deviceStatus({ ...fixture, drives: [{ health: 'warning' }] }, false, 100001), 'degraded')
   assert.equal(deviceStatus({ ...fixture, status: 'degraded' }, false, 100001), 'degraded')
 })
 

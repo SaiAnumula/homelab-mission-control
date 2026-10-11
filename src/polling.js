@@ -1,12 +1,13 @@
 export function deviceStatus(device, stale = false, now = Date.now()) {
   const checked = Date.parse(device.checkedAt)
-  if (stale || !Number.isFinite(checked) || now - checked > 25000) return 'stale'
+  const collected = device.collectedAt ? Date.parse(device.collectedAt) : checked
+  if (stale || !Number.isFinite(checked) || !Number.isFinite(collected) || now - Math.min(checked, collected) > 25000) return 'stale'
   if (!device.online) return 'down'
-  if (device.status === 'degraded' || device.containers?.some(item => item.state !== 'running' || ['unhealthy', 'starting'].includes(item.health)) || device.services?.some(item => item.state !== 'active')) return 'degraded'
+  if (device.status === 'degraded' || device.drives?.some(item => ['warning', 'failing'].includes(item.health)) || device.containers?.some(item => item.state !== 'running' || ['unhealthy', 'starting'].includes(item.health)) || device.services?.some(item => item.state !== 'active')) return 'degraded'
   return 'up'
 }
 export function validateTelemetry(data) {
-  if (!data || !Array.isArray(data.devices) || data.devices.some(device => !device || typeof device.id !== 'string' || typeof device.online !== 'boolean')) throw new Error('Invalid telemetry response')
+  if (!data || !Array.isArray(data.devices) || data.devices.some(device => !device || typeof device.id !== 'string' || typeof device.name !== 'string' || (device.os != null && typeof device.os !== 'string') || typeof device.online !== 'boolean')) throw new Error('Invalid telemetry response')
   for (const device of data.devices) {
     for (const key of ['specs', 'usage']) if (device[key] != null && (typeof device[key] !== 'object' || Array.isArray(device[key]) || Object.values(device[key]).some(value => value !== null && !['string', 'number', 'boolean'].includes(typeof value)))) throw new Error('Invalid telemetry response')
     for (const key of ['drives', 'containers', 'services']) {

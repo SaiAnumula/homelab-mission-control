@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { collectDevices, createCachedCollector, publicDevice, validateDevices } from '../telemetry.js'
 const device = { id: 'fixture', name: 'Fixture', endpoint: 'demo', token: 'fixture-only' }
 test('configuration errors fail explicitly before collecting', async () => {
-  for (const invalid of [{}, [device, device], [{ ...device, endpoint: 'file:///fixture' }], [{ ...device, endpoint: 'https://user:password@example.invalid' }]]) assert.throws(() => validateDevices(invalid))
+  for (const invalid of [[{ ...device, label: {} }], {}, [device, device], [{ ...device, endpoint: 'file:///fixture' }], [{ ...device, endpoint: 'https://user:password@example.invalid' }]]) assert.throws(() => validateDevices(invalid))
   let calls = 0
   await assert.rejects(collectDevices({}, () => { calls++ }))
   assert.equal(calls, 0)
@@ -18,7 +18,7 @@ test('invalid payload and failed probes produce isolated down states without lea
   const result = await collectDevices([device], async () => { throw new Error('secret URL') }, () => 'fixture-time')
   assert.equal(result[0].online, false); assert.equal(result[0].checkedAt, 'fixture-time')
   assert.equal(JSON.stringify(result).includes('secret'), false)
-  for (const stats of [null, { online: 'yes' }, { online: true, containers: {} }, { online: true, services: [{ name: 'fixture' }] }, { online: true, specs: { cpu: {} } }, { online: true, usage: { cpu: 'high' } }]) assert.throws(() => publicDevice(device, stats))
+  for (const stats of [null, { online: true, uptime: NaN }, { online: 'yes' }, { online: true, containers: {} }, { online: true, services: [{ name: 'fixture' }] }, { online: true, specs: { cpu: {} } }, { online: true, usage: { cpu: 'high' } }]) assert.throws(() => publicDevice(device, stats))
 })
 test('concurrent requests share collection and TTL limits repeated probes', async () => {
   let calls = 0, clock = 0, release
