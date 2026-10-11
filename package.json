@@ -7,19 +7,28 @@
     "dev": "concurrently \"node --watch server.js\" \"vite --host 0.0.0.0\"",
     "server": "node server.js",
     "build": "vite build",
-    "test": "python3 -m unittest discover -s tests",
+    "test": "python3 -m unittest discover -s tests && npm run test:node",
     "start": "NODE_ENV=production node server.js",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "test:node": "node --test node-tests/*.test.js",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "concurrently": "latest",
     "express": "latest",
     "lucide-react": "latest",
-    "systeminformation": "latest",
-    "vite": "latest",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "systeminformation": "latest",
+    "vite": "latest"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "eslint": "^10.12.0",
+    "typescript": "^5.9.3"
+  }
 }

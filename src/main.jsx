@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Activity, Box, ChevronDown, Cpu, Database, Gamepad2, Gauge, HardDrive, Laptop, Layers, MemoryStick, RefreshCw, Server, ShieldCheck, Thermometer, Wifi, WifiOff } from 'lucide-react'
 import './styles.css'
@@ -63,7 +63,7 @@ function DeviceCard({ device, index, stale }) {
   const status = deviceStatus(device, stale)
   const Icon = icons[device.type] || Server
   const usage = device.usage || {}
-  return <article className={`device-card accent-${device.accent || 'green'}`} style={{ '--delay': `${index * 70}ms` }}>
+  return <article className={`device-card accent-${device.accent || 'green'}`} style={/** @type {import('react').CSSProperties} */ ({ '--delay': `${index * 70}ms` })}>
     <div className="card-head">
       <div className="device-icon"><Icon size={22} /></div>
       <div className="identity"><span>{device.label || 'SYSTEM NODE'}</span><h2>{device.name}</h2></div>
@@ -133,10 +133,10 @@ function DeviceCard({ device, index, stale }) {
 }
 
 function App() {
-  const [data, setData] = useState({ devices: [] })
+  const [data, setData] = useState(/** @type {{ devices: Array<{id: string, online: boolean, checkedAt?: string}>, updatedAt?: string }} */ ({ devices: [] }))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const poller = useRef(null)
+  const poller = useRef(/** @type {ReturnType<typeof createPoller> | null} */ (null))
   useEffect(() => {
     const active = createPoller({
       onData: next => { setData(next); setError('') },
@@ -168,4 +168,6 @@ function App() {
   </main>
 }
 
-createRoot(document.getElementById('root')).render(<App />)
+const root = document.getElementById('root')
+if (!root) throw new Error('Dashboard root is missing')
+createRoot(root).render(<App />)

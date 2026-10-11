@@ -13,9 +13,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # Matches `npm test` / local: standard library unittest, no third-party deps.
+      - name: Check Python syntax and warnings
+        run: python -W error -m compileall -q agent tests
+      # Standard library tests forbid real monitoring and subprocess operations.
       - name: Run test suite
-        run: python -m unittest discover -s tests
+        run: python -W error -m unittest discover -s tests
 
   frontend-build:
     name: React/Vite frontend build
@@ -25,8 +27,14 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
+          cache: npm
       - name: Install dependencies
         run: npm ci
-      # Matches `npm run build` (vite build) used for production deploys.
+      - name: Lint (warnings fail)
+        run: npm run lint
+      - name: Typecheck frontend JavaScript and JSX
+        run: npm run typecheck
+      - name: Test telemetry and polling using mocks
+        run: npm run test:node
       - name: Build frontend
         run: npm run build
