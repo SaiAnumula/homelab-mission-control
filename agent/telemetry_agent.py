@@ -9,8 +9,10 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -493,6 +495,7 @@ def stats():
     uptime = float(uptime_raw[0]) if uptime_raw else 0.0
     return {
         "online": True,
+        "collectedAt": datetime.now(timezone.utc).isoformat(),
         "os": os_release.get("PRETTY_NAME", platform.platform()),
         "uptime": uptime,
         "specs": {
@@ -521,16 +524,42 @@ def stats():
     }
 
 
+class StatsCache:
+    """Share one read-only collection round across concurrent dashboard clients."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._payload = None
+        self._expires = 0
+
+    def get(self):
+        with self._lock:
+            now = time.monotonic()
+            if self._payload is not None and now < self._expires:
+                return self._payload
+            # Cache failures briefly too, preventing retry storms on an unhealthy host.
+            try:
+                payload, status = stats(), 200
+            except Exception:
+                payload, status = {"online": False, "error": "Telemetry collection unavailable"}, 503
+            self._payload = (payload, status)
+            self._expires = time.monotonic() + 10
+            return self._payload
+
+
+STATS_CACHE = StatsCache()
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path.rstrip("/") or "/"
         if path not in ("/api/agent/stats", "/api/health"):
             self.send_error(404)
             return
-        payload = {"ok": True} if path == "/api/health" else stats()
+        payload, status = ({"ok": True}, 200) if path == "/api/health" else STATS_CACHE.get()
         body = json.dumps(payload).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
