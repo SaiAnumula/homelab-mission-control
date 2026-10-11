@@ -1,3 +1,4 @@
+import { collectDevices, createCachedCollector, validateDevices } from './telemetry.js'
 import express from 'express'
 import si from 'systeminformation'
 import fs from 'node:fs/promises'
@@ -141,43 +142,34 @@ function demoStats(device, index) {
 }
 
 async function getDevices() {
-  try {
-    return JSON.parse(await fs.readFile(devicesPath, 'utf8'))
-  } catch {
-    return []
-  }
+  return validateDevices(JSON.parse(await fs.readFile(devicesPath, 'utf8')))
 }
+
+const cachedLocalStats = createCachedCollector(localStats)
+const cachedDevices = createCachedCollector(async () => {
+  const devices = await getDevices()
+  const results = await collectDevices(devices, async (device, index) => {
+    if (device.endpoint === 'local') return cachedLocalStats()
+    if (device.endpoint === 'demo') return demoStats(device, index)
+    const response = await fetch(`${device.endpoint.replace(/\/$/, '')}/api/agent/stats`, {
+      signal: AbortSignal.timeout(4000),
+      redirect: 'error',
+      headers: device.token ? { Authorization: `Bearer ${device.token}` } : {},
+    })
+    if (!response.ok) throw new Error('Telemetry unavailable')
+    return response.json()
+  })
+  return { devices: results, updatedAt: new Date().toISOString() }
+})
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }))
 app.get('/api/devices', async (_req, res) => {
-  try {
-    const devices = await getDevices()
-    const results = await Promise.all(devices.map(async (device, index) => {
-      try {
-        let stats
-        if (device.endpoint === 'local') stats = await localStats()
-        else if (device.endpoint === 'demo') stats = demoStats(device, index)
-        else {
-          const response = await fetch(`${device.endpoint.replace(/\/$/, '')}/api/agent/stats`, {
-            signal: AbortSignal.timeout(4000),
-            headers: device.token ? { Authorization: `Bearer ${device.token}` } : {},
-          })
-          if (!response.ok) throw new Error(`HTTP ${response.status}`)
-          stats = await response.json()
-        }
-        return { ...device, ...stats }
-      } catch (error) {
-        return { ...device, online: false, error: error.message, usage: {}, specs: {} }
-      }
-    }))
-    res.json({ devices: results, updatedAt: new Date().toISOString() })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
+  try { res.json(await cachedDevices()) }
+  catch { res.status(500).json({ error: 'Unable to load telemetry configuration' }) }
 })
 
 app.get('/api/agent/stats', async (_req, res) => {
-  try { res.json(await localStats()) } catch (error) { res.status(500).json({ error: error.message }) }
+  try { res.json(await cachedLocalStats()) } catch (error) { res.status(500).json({ error: error.message }) }
 })
 
 if (process.env.NODE_ENV === 'production') {
