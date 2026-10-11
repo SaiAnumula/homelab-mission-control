@@ -168,8 +168,8 @@ def aggregate_devices(devices):
     def safe_fetch(device):
         try:
             return fetch_device(device)
-        except Exception as error:  # A worker failure must not take down every card.
-            return failed_device(device, f"Telemetry fetch failed: {error}")
+        except Exception:  # A worker failure must not take down every card.
+            return failed_device(device, "Telemetry fetch failed")
     with ThreadPoolExecutor(max_workers=min(len(devices), MAX_FETCH_WORKERS)) as pool:
         return list(pool.map(safe_fetch, devices))
 

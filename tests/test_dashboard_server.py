@@ -60,7 +60,7 @@ class AggregateDevicesTests(unittest.TestCase):
         by_id = {r["id"]: r for r in results}
         self.assertTrue(by_id["ok"]["online"])
         self.assertFalse(by_id["boom"]["online"])
-        self.assertIn("socket exploded", by_id["boom"]["error"])
+        self.assertEqual(by_id["boom"]["error"], "Telemetry fetch failed")
 
     def test_aggregate_handles_empty_device_list_without_error(self):
         self.assertEqual(dashboard_server.aggregate_devices([]), [])

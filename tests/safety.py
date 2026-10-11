@@ -19,5 +19,3 @@ _guards = [
 ]
 for _guard in _guards:
     _guard.start()
-
-
