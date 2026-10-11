@@ -5,7 +5,7 @@ const fields = (value, names) => Object.fromEntries(names.filter(key => value?.[
 }))
 const object = value => value && typeof value === 'object' && !Array.isArray(value)
 export function validateDevices(devices) {
-  if (!Array.isArray(devices)) throw new Error('Device configuration must be an array')
+  if (!Array.isArray(devices) || devices.length > 64) throw new Error('Device configuration must be an array')
   const ids = new Set()
   for (const device of devices) {
     if (!object(device) || typeof device.id !== 'string' || !device.id.trim() || typeof device.name !== 'string' || !device.name.trim()) throw new Error('Each device needs an id and name')
@@ -26,6 +26,10 @@ export function publicDevice(device, stats, checkedAt) {
   const result = fields(stats, ['online', 'status', 'demo', 'os', 'uptime'])
   result.specs = fields(stats.specs, ['cpu', 'cores', 'memory', 'disk', 'gpu', 'vram'])
   result.usage = fields(stats.usage, ['cpu', 'memory', 'disk', 'gpu', 'gpu_vram', 'temperature', 'net_rx_rate', 'net_tx_rate', 'disk_read_rate', 'disk_write_rate'])
+  for (const value of Object.values(result.specs)) if (value !== null && typeof value !== 'string') throw new Error('Invalid telemetry specs')
+  for (const [key, value] of Object.entries(result.usage)) {
+    if (value !== null && (key.endsWith('_rate') ? typeof value !== 'string' : !Number.isFinite(value))) throw new Error('Invalid telemetry usage')
+  }
   for (const [key, names] of Object.entries({ drives: ['name', 'device', 'model', 'capacity', 'size_bytes', 'mount', 'used_bytes', 'usage', 'health', 'primary'], containers: ['name', 'state', 'status', 'health'], services: ['id', 'name', 'state', 'detail'] })) {
     if (stats[key] !== undefined && (!Array.isArray(stats[key]) || stats[key].some(item => !object(item)))) throw new Error('Invalid telemetry payload')
     result[key] = (stats[key] || []).map(item => {

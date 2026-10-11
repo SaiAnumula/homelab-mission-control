@@ -7,6 +7,13 @@ export function deviceStatus(device, stale = false, now = Date.now()) {
 }
 export function validateTelemetry(data) {
   if (!data || !Array.isArray(data.devices) || data.devices.some(device => !device || typeof device.id !== 'string' || typeof device.online !== 'boolean')) throw new Error('Invalid telemetry response')
+  for (const device of data.devices) {
+    for (const key of ['specs', 'usage']) if (device[key] != null && (typeof device[key] !== 'object' || Array.isArray(device[key]) || Object.values(device[key]).some(value => value !== null && !['string', 'number', 'boolean'].includes(typeof value)))) throw new Error('Invalid telemetry response')
+    for (const key of ['drives', 'containers', 'services']) {
+      if (device[key] == null) continue
+      if (!Array.isArray(device[key]) || device[key].some(item => !item || typeof item !== 'object' || Array.isArray(item) || Object.values(item).some(value => value !== null && !['string', 'number', 'boolean'].includes(typeof value)) || (key !== 'drives' && (typeof item.state !== 'string' || typeof item.name !== 'string')))) throw new Error('Invalid telemetry response')
+    }
+  }
   return data
 }
 export function createPoller({ fetcher = fetch, onData, onError, onLoading, interval = 10000, timeout = 6000, schedule = setTimeout, cancel = clearTimeout }) {

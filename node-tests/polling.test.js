@@ -33,6 +33,7 @@ test('HTTP and malformed data fail visibly', async () => {
     const h = harness(async () => response); await h.poller.refresh(); assert.equal(h.events[1][0], 'error'); h.poller.stop()
   }
   assert.throws(() => validateTelemetry({ devices: [null] }))
+  for (const malformed of [{ services: [{ name: 'fixture' }] }, { drives: {} }, { containers: [null] }, { specs: { cpu: {} } }]) assert.throws(() => validateTelemetry({ devices: [{ id: 'fixture', online: true, ...malformed }] }))
 })
 test('status distinguishes down, degraded, stale and fresh up', () => {
   const fixture = { online: true, checkedAt: new Date(100000).toISOString() }

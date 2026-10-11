@@ -18,7 +18,7 @@ test('invalid payload and failed probes produce isolated down states without lea
   const result = await collectDevices([device], async () => { throw new Error('secret URL') }, () => 'fixture-time')
   assert.equal(result[0].online, false); assert.equal(result[0].checkedAt, 'fixture-time')
   assert.equal(JSON.stringify(result).includes('secret'), false)
-  for (const stats of [null, { online: 'yes' }, { online: true, containers: {} }]) assert.throws(() => publicDevice(device, stats))
+  for (const stats of [null, { online: 'yes' }, { online: true, containers: {} }, { online: true, services: [{ name: 'fixture' }] }, { online: true, specs: { cpu: {} } }, { online: true, usage: { cpu: 'high' } }]) assert.throws(() => publicDevice(device, stats))
 })
 test('concurrent requests share collection and TTL limits repeated probes', async () => {
   let calls = 0, clock = 0, release
