@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Activity, Box, ChevronDown, Cpu, Database, Gamepad2, Gauge, HardDrive, Laptop, Layers, MemoryStick, RefreshCw, Server, ShieldCheck, Thermometer, Wifi, WifiOff } from 'lucide-react'
 import './styles.css'
+import { createPoller, deviceStatus } from './polling.js'
 
 const icons = { pc: Cpu, server: Server, laptop: Laptop }
 
@@ -58,20 +59,22 @@ function DriveDetails({ drives = [], fallback }) {
   </details>
 }
 
-function DeviceCard({ device, index }) {
+function DeviceCard({ device, index, stale }) {
+  const status = deviceStatus(device, stale)
   const Icon = icons[device.type] || Server
   const usage = device.usage || {}
   return <article className={`device-card accent-${device.accent || 'green'}`} style={{ '--delay': `${index * 70}ms` }}>
     <div className="card-head">
       <div className="device-icon"><Icon size={22} /></div>
       <div className="identity"><span>{device.label || 'SYSTEM NODE'}</span><h2>{device.name}</h2></div>
-      <div className={`status ${device.online ? '' : 'offline'}`}>{device.online ? <Wifi size={14}/> : <WifiOff size={14}/>} {device.online ? 'ONLINE' : 'OFFLINE'}</div>
+      <div className={`status ${status}`} aria-label={`Status: ${status}`}>{status === 'up' ? <Wifi size={14}/> : <WifiOff size={14}/>} {status.toUpperCase()}</div>
     </div>
     {device.demo && <div className="demo-tag">DEMO DATA · configure endpoint to connect</div>}
     <div className="system-line">
       <span>{device.online ? (device.os || 'System unavailable') : (device.error ? `OFFLINE · ${device.error}` : 'Host unreachable')}</span>
       <span>{device.online ? `UP ${formatUptime(device.uptime)}` : 'DISCONNECTED'}</span>
     </div>
+    <div className="last-checked">Last checked: {Number.isFinite(Date.parse(device.checkedAt)) ? new Date(device.checkedAt).toLocaleTimeString() : 'Unknown'}{status === 'stale' && ' · Values may be outdated'}</div>
     <div className="spec-grid">
       <div><small>PROCESSOR</small><b><TooltipText>{device.specs?.cpu}</TooltipText></b><em>{device.specs?.cores}</em></div>
       <div><small>MEMORY</small><b>{device.specs?.memory || '—'}</b></div>
@@ -133,29 +136,35 @@ function App() {
   const [data, setData] = useState({ devices: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const load = async () => {
-    try {
-      const response = await fetch('/api/devices')
-      if (!response.ok) throw new Error('Telemetry service unavailable')
-      setData(await response.json()); setError('')
-    } catch (e) { setError(e.message) } finally { setLoading(false) }
-  }
-  useEffect(() => { load(); const timer = setInterval(load, 10000); return () => clearInterval(timer) }, [])
-  const online = data.devices.filter(d => d.online).length
+  const poller = useRef(null)
+  useEffect(() => {
+    const active = createPoller({
+      onData: next => { setData(next); setError('') },
+      onError: setError,
+      onLoading: setLoading,
+    })
+    poller.current = active
+    active.refresh()
+    return () => { active.stop(); poller.current = null }
+  }, [])
+  const stale = Boolean(error)
+  const online = data.devices.filter(d => deviceStatus(d, stale) === 'up').length
+  const summary = stale ? 'TELEMETRY STALE' : loading && !data.devices.length ? 'CONNECTING' : !data.devices.length ? 'NO NODES' : online === data.devices.length ? 'NETWORK UP' : 'NETWORK DEGRADED'
   return <main>
     <header>
       <div className="brand"><div className="mark"><Activity size={23}/></div><div><span>SYS::OVERVIEW</span><h1>mission_control</h1></div></div>
       <div className="header-right">
-        <div className="summary"><span><i /> NETWORK NOMINAL</span><b>{online}<small> / {data.devices.length} NODES</small></b></div>
-        <button onClick={load} aria-label="Refresh telemetry"><RefreshCw size={18} className={loading ? 'spin' : ''}/></button>
+        <div className="summary"><span><i /> {summary}</span><b>{online}<small> / {data.devices.length} NODES</small></b></div>
+        <button onClick={() => poller.current?.refresh()} disabled={loading} aria-label="Refresh telemetry" aria-busy={loading}><RefreshCw size={18} className={loading ? 'spin' : ''}/></button>
       </div>
     </header>
-    <div className="rule"><span>LIVE TELEMETRY</span><i /></div>
-    {error && <div className="error">{error}</div>}
-    {loading && !data.devices.length ? <div className="loading"><Activity/> Establishing telemetry link…</div> : <section className="device-grid">
-      {data.devices.map((device, i) => <DeviceCard device={device} index={i} key={device.id}/>) }
+    <div className="rule"><span>{stale ? 'STALE TELEMETRY' : 'TELEMETRY'}</span><i /></div>
+    {error && <div className="error" role="alert">{error}</div>}
+    {loading && !data.devices.length ? <div className="loading"><Activity/> Establishing telemetry link…</div> : <section className="device-grid" aria-busy={loading}>
+      {!loading && !error && !data.devices.length && <div className="loading">No devices configured. Add nodes to your local configuration.</div>}
+      {data.devices.map((device, i) => <DeviceCard device={device} index={i} stale={stale} key={device.id}/>) }
     </section>}
-    <footer><span><ShieldCheck size={14}/> SECURE LOCAL TELEMETRY</span><span>REFRESH 10S</span><span><Database size={14}/> {data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : 'WAITING'}</span></footer>
+    <footer><span><ShieldCheck size={14}/> SECURE LOCAL TELEMETRY</span><span>POLL 10S AFTER COMPLETION</span><span><Database size={14}/> {data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : 'WAITING'}</span></footer>
   </main>
 }
 

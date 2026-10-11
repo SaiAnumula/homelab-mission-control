@@ -23,7 +23,7 @@ export function validateDevices(devices) {
 export function publicDevice(device, stats, checkedAt) {
   if (!object(stats) || typeof stats.online !== 'boolean') throw new Error('Invalid telemetry payload')
   for (const key of ['specs', 'usage']) if (stats[key] !== undefined && !object(stats[key])) throw new Error('Invalid telemetry payload')
-  const result = fields(stats, ['online', 'demo', 'os', 'uptime'])
+  const result = fields(stats, ['online', 'status', 'demo', 'os', 'uptime'])
   result.specs = fields(stats.specs, ['cpu', 'cores', 'memory', 'disk', 'gpu', 'vram'])
   result.usage = fields(stats.usage, ['cpu', 'memory', 'disk', 'gpu', 'gpu_vram', 'temperature', 'net_rx_rate', 'net_tx_rate', 'disk_read_rate', 'disk_write_rate'])
   for (const [key, names] of Object.entries({ drives: ['name', 'device', 'model', 'capacity', 'size_bytes', 'mount', 'used_bytes', 'usage', 'health', 'primary'], containers: ['name', 'state', 'status', 'health'], services: ['id', 'name', 'state', 'detail'] })) {
