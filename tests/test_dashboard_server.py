@@ -101,7 +101,8 @@ class DashboardHandlerRoutingTests(unittest.TestCase):
     def test_load_devices_handles_missing_file_safely(self):
         from pathlib import Path
         with patch.object(dashboard_server, "DEVICES", Path("/nonexistent/devices.json")):
-            self.assertEqual(dashboard_server.load_devices(), [])
+            with self.assertRaises(dashboard_server.ConfigurationError):
+                dashboard_server.load_devices()
 
     def test_load_devices_handles_malformed_json_safely(self, tmp_path=None):
         import tempfile
@@ -112,7 +113,8 @@ class DashboardHandlerRoutingTests(unittest.TestCase):
             temp_path = Path(f.name)
         try:
             with patch.object(dashboard_server, "DEVICES", temp_path):
-                self.assertEqual(dashboard_server.load_devices(), [])
+                with self.assertRaises(dashboard_server.ConfigurationError):
+                    dashboard_server.load_devices()
         finally:
             temp_path.unlink(missing_ok=True)
 
