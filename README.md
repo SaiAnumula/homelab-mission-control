@@ -14,7 +14,7 @@ The project is designed for a trusted LAN or encrypted overlay network such as T
 - AMD GPU utilization & VRAM through Linux sysfs and NVIDIA utilization & VRAM through `nvidia-smi`
 - Docker container health (`healthy`, `unhealthy`, `starting`), state, and uptime
 - Configurable systemd service monitoring, including game servers
-- Online/offline detection with clean status reasons and ten-second automatic refresh
+- Up/down/degraded status, last-checked timestamps, and honest stale-data display
 - Manual refresh without restarting any monitored service
 - Lightweight Python telemetry agent with no third-party Python packages
 - Node.js development server and standalone Python production host
@@ -46,7 +46,7 @@ Each monitored Linux machine runs `agent/telemetry_agent.py`. The dashboard host
 
 ### Dashboard development
 
-- Node.js 20 or newer
+- Node.js 22.13 or newer (CI uses Node 22)
 - npm
 
 ### Production dashboard host
@@ -69,19 +69,54 @@ Windows is supported by the Node/systeminformation endpoint but not by the light
 
 ```bash
 git clone https://github.com/SaiAnumula/homelab-mission-control.git
-cd mission-control
-npm install
+cd homelab-mission-control
+npm ci
 cp devices.example.json devices.json
 npm run dev
 ```
 
-Open `http://localhost:5173`. Vite serves the frontend and proxies `/api` to the Node telemetry server on port 4242.
+Open `http://localhost:5173`. Vite serves the frontend and proxies `/api` to the Node telemetry server on port 4242. The default template uses **synthetic demo data**, so development does not contact agents or collect host telemetry. Set an endpoint to `local` or a private URL only when you deliberately want live monitoring.
 
 Build the frontend with:
 
 ```bash
 npm run build
 ```
+
+## Tests and checks (no live homelab access)
+
+```bash
+npm ci
+npm test                       # Python unittest + mocked Node helper tests
+npm run lint                   # ESLint; warnings fail
+npm run typecheck              # TypeScript checks frontend JavaScript/JSX
+npm run build                  # Production Vite assets
+python3 -W error -m unittest discover -s tests
+python3 -W error -m compileall -q agent deploy tests
+```
+
+The Python tests block socket connections, DNS, socket binding, and subprocess
+execution, including targeted test-module runs. Command, service, and transport
+checks use mocks exclusively; the test suite starts no server and performs no
+Docker, SSH, or systemctl operation. Node tests import pure helpers with injected
+collectors; they never import the executable `server.js` or start host monitoring.
+
+Automatic browser refresh waits ten seconds **after** the preceding request
+finishes. Requests time out after six seconds; concurrent manual refresh clicks
+share the in-flight request. Failed requests retain the previous snapshot with
+STALE labels. Per-device checks and the footer show timestamps. Inactive services,
+unhealthy/starting containers, and warning/failing drives make a reachable node
+DEGRADED rather than UP.
+
+The Python dashboard and Node API share a ten-second cache across clients, and
+the Python agent shares one cached collection round. Endpoint failures are also
+cached, limiting retry pressure. Python endpoint requests use a four-second
+socket timeout, eight-worker cap, and one-MiB response limit. Agent responses
+cannot replace configured identity or expose endpoint/credential fields.
+`collectedAt` records the Python agent's snapshot creation time; `checkedAt`
+records the dashboard's endpoint check. A cache hit preserves these timestamps.
+Individual agent subprocesses have deadlines, but the first full collection has
+no global deadline and can still exceed the endpoint timeout on slow hardware.
 
 ## Device configuration
 
@@ -99,7 +134,7 @@ Each device supports:
 | `name` | Display name |
 | `label` | Small role label shown above the name |
 | `type` | Icon type: `pc`, `server`, or `laptop` |
-| `endpoint` | `local` for the Node host, or the telemetry agent URL |
+| `endpoint` | `demo` for synthetic Node data, `local` for host collection, or an HTTP(S) agent URL |
 | `accent` | Card color: `green`, `cyan`, or `amber` |
 
 Example remote endpoint:
@@ -110,12 +145,12 @@ Example remote endpoint:
   "name": "Storage Server",
   "label": "STORAGE NODE",
   "type": "server",
-  "endpoint": "http://100.64.0.10:4242",
+  "endpoint": "http://storage.example:4242",
   "accent": "cyan"
 }
 ```
 
-The addresses in example files are documentation-only Tailscale CGNAT examples. Replace them in your ignored runtime configuration.
+The `.example` hostnames are reserved documentation placeholders. Replace them only in your ignored runtime configuration. The Python production host supports `local` and HTTP(S) endpoints; `demo` is a Node development feature. Device identifiers must be unique, `id` and `name` must be nonempty strings, and configurations are limited to 64 devices. Invalid configuration is reported as an API error rather than an empty dashboard.
 
 Set a different Node configuration path with `MISSION_CONTROL_DEVICES=/path/to/devices.json`.
 
@@ -139,7 +174,7 @@ The agent listens on `0.0.0.0:4242` by default. Override port or bind host (e.g.
 
 ```ini
 Environment=MISSION_CONTROL_PORT=4243
-Environment=MISSION_CONTROL_HOST=100.64.0.10
+Environment=MISSION_CONTROL_HOST=127.0.0.1
 ```
 
 Some PCI identifiers cover multiple closely related GPU models. Set an exact display name when automatic identification is ambiguous:
@@ -207,7 +242,7 @@ Drive capacities use decimal units, matching manufacturer labels such as 2 TB. M
 
 SMART health is an optional enhancement; drive inventory, capacity, and utilization work without it. When `smartctl` is installed and readable by the telemetry-agent user, Mission Control reports the device's overall SMART result. Otherwise the dashboard displays `SMART N/A`.
 
-Health probes run concurrently across all physical disks and each one is capped by a timeout, so a drive that stops responding cannot stall the whole stats round or take the node offline. A drive whose SMART result cannot be read reports `SMART N/A` -- the dashboard only shows failing or warning when the drive itself reports it.
+Health probes run with at most eight concurrent workers and each probe has a four-second timeout. Large or slow inventories can still exceed the dashboard timeout on the first uncached collection; subsequent clients share cached results. A drive whose SMART result cannot be read reports `SMART N/A` -- the dashboard only shows failing or warning when the drive itself reports it.
 
 Install the optional tool with the package manager for the monitored host, for example:
 
@@ -246,7 +281,7 @@ Replace the username and device paths for the host, validate the file with `visu
 Install Tailscale on the dashboard host, monitored machines, and client devices. Use a Tailscale address or MagicDNS name as each endpoint, then open the production dashboard from another tailnet device:
 
 ```text
-http://dashboard-host.example.ts.net:8080
+http://dashboard.example:8080
 ```
 
 If UFW is enabled, permit only the Tailscale interface:

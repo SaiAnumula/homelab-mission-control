@@ -4,7 +4,7 @@
     "name": "Main PC",
     "label": "COMMAND STATION",
     "type": "pc",
-    "endpoint": "local",
+    "endpoint": "demo",
     "accent": "green"
   },
   {
@@ -12,7 +12,7 @@
     "name": "Home Server",
     "label": "PRIMARY NODE",
     "type": "server",
-    "endpoint": "http://100.64.0.10:4242",
+    "endpoint": "demo",
     "accent": "cyan"
   },
   {
@@ -20,7 +20,7 @@
     "name": "Game Server",
     "label": "EDGE NODE",
     "type": "server",
-    "endpoint": "http://server.example.ts.net:4242",
+    "endpoint": "demo",
     "accent": "amber"
   }
 ]
