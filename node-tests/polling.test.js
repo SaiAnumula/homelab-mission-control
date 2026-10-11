@@ -11,20 +11,20 @@ test('manual refresh coalesces with polling and schedules only after completion'
   let release, calls = 0
   const h = harness(() => { calls++; return new Promise(resolve => { release = resolve }) })
   const a = h.poller.refresh(), b = h.poller.refresh()
-  assert.equal(calls, 1); assert.equal(h.timers.size, 1)
+  await Promise.resolve(); assert.equal(calls, 1); assert.equal(h.timers.size, 1)
   release({ ok: true, json: async () => data }); await Promise.all([a, b])
   assert.equal(h.timers.size, 1); assert.equal([...h.timers.values()][0].delay, 10000)
   assert.deepEqual(h.events.map(e => e[0]), ['loading', 'data', 'loading']); h.poller.stop(); assert.equal(h.timers.size, 0)
 })
 test('timeout aborts request, reports stale state and allows next poll', async () => {
   const h = harness((_url, { signal }) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(Error(), { name: 'AbortError' })))))
-  const pending = h.poller.refresh(); [...h.timers.values()][0].fn(); await pending
+  const pending = h.poller.refresh(); await Promise.resolve(); [...h.timers.values()][0].fn(); await pending
   assert.match(h.events[1][1], /timed out.*stale/); assert.equal([...h.timers.values()][0].delay, 10000); h.poller.stop()
 })
 test('unmount aborts and suppresses callbacks and future polls', async () => {
   let release, signal
   const h = harness((_url, options) => { signal = options.signal; return new Promise(resolve => { release = resolve }) })
-  const pending = h.poller.refresh(); h.poller.stop(); assert.equal(signal.aborted, true)
+  const pending = h.poller.refresh(); await Promise.resolve(); h.poller.stop(); assert.equal(signal.aborted, true)
   release({ ok: true, json: async () => data }); await pending
   assert.deepEqual(h.events, [['loading', true]]); assert.equal(h.timers.size, 0)
 })
@@ -43,4 +43,11 @@ test('status distinguishes down, degraded, stale and fresh up', () => {
   assert.equal(deviceStatus({ ...fixture, online: false }, false, 100001), 'down')
   assert.equal(deviceStatus({ ...fixture, containers: [{ state: 'running', health: 'unhealthy' }] }, false, 100001), 'degraded')
   assert.equal(deviceStatus({ ...fixture, status: 'degraded' }, false, 100001), 'degraded')
+})
+
+test('a synchronous transport failure releases pending for manual retry', async () => {
+  let calls = 0
+  const h = harness(() => { if (!calls++) throw new Error('fixture transport failure'); return Promise.resolve({ ok: true, json: async () => data }) })
+  await h.poller.refresh(); assert.equal(h.events[1][0], 'error')
+  await h.poller.refresh(); assert.equal(calls, 2); assert.equal(h.events[4][0], 'data'); h.poller.stop()
 })

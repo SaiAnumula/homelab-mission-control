@@ -27,6 +27,8 @@ export function createPoller({ fetcher = fetch, onData, onError, onLoading, inte
     onLoading(true)
     pending = (async () => {
       try {
+        // Defer transport execution so even synchronous throws release pending.
+        await Promise.resolve()
         const response = await fetcher('/api/devices', { signal: controller.signal })
         if (!response.ok) throw new Error('Telemetry service unavailable')
         const data = validateTelemetry(await response.json())
