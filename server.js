@@ -43,13 +43,13 @@ async function localStats() {
     si.cpu(), si.currentLoad(), si.mem(), si.fsSize(), si.osInfo(), Promise.resolve(si.time()),
     si.graphics().catch(() => ({ controllers: [] })),
     si.dockerContainers(true).catch(() => []),
-    si.cpuTemperature().catch(() => ({})),
-    si.networkStats().catch(() => []),
-    si.fsStats().catch(() => ({})),
+    si.cpuTemperature().catch(() => ({ main: 0, max: 0 })),
+    si.networkStats().catch(() => /** @type {import('systeminformation').Systeminformation.NetworkStatsData[]} */ ([])),
+    si.fsStats().catch(() => ({ rx_sec: 0, wx_sec: 0 })),
   ])
   const disk = disks.find((item) => item.mount === '/') || disks[0]
   const gpu = graphics.controllers?.[0]
-  const gpuLoad = Number.isFinite(gpu?.utilizationGpu) ? Math.round(gpu.utilizationGpu) : await linuxGpuUsage()
+  const gpuLoad = Number.isFinite(gpu?.utilizationGpu) ? Math.round(gpu?.utilizationGpu || 0) : await linuxGpuUsage()
   const vramMb = gpu?.vram || gpu?.memoryTotal
   const vramLabel = vramMb ? `${(vramMb / 1024).toFixed(0)} GB` : null
   const activeNet = net.find((item) => !item.iface?.startsWith('lo')) || net[0]

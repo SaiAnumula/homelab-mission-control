@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check Python syntax and warnings
-        run: python -W error -m compileall -q agent tests
+        run: python -W error -m compileall -q agent deploy tests
       # Standard library tests forbid real monitoring and subprocess operations.
       - name: Run test suite
         run: python -W error -m unittest discover -s tests
