@@ -442,27 +442,36 @@ def io_rates():
 
 
 def monitored_services():
-    """Report known game/services only when they are installed on this host."""
-    names = os.environ.get("MISSION_CONTROL_SERVICES", "palworld.service").split(",")
-    services = []
-    for name in (item.strip() for item in names if item.strip()):
+    """Read service states concurrently; a failed check stays visibly unknown."""
+    names = list(dict.fromkeys(item.strip() for item in os.environ.get(
+        "MISSION_CONTROL_SERVICES", "palworld.service"
+    ).split(",") if item.strip()))
+
+    def check(name):
+        fallback = {"id": name, "name": name.removesuffix(".service").title(),
+                    "state": "unknown", "detail": "check unavailable"}
         try:
             result = subprocess.run(
-                ["systemctl", "show", name, "--property=LoadState,ActiveState,SubState,Description"],
+                ["systemctl", "show", "--property=LoadState,ActiveState,SubState,Description", "--", name],
                 capture_output=True, text=True, timeout=3,
             )
+            if result.returncode:
+                return fallback
             fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+            if fields.get("LoadState") == "not-found":
+                return None
             if fields.get("LoadState") != "loaded":
-                continue
-            services.append({
-                "id": name,
-                "name": fields.get("Description") or name.removesuffix(".service").title(),
-                "state": fields.get("ActiveState", "unknown"),
-                "detail": fields.get("SubState", "unknown"),
-            })
+                return fallback
+            return {"id": name, "name": fields.get("Description") or fallback["name"],
+                    "state": fields.get("ActiveState", "unknown"),
+                    "detail": fields.get("SubState", "unknown")}
         except (OSError, subprocess.TimeoutExpired):
-            pass
-    return services
+            return fallback
+
+    if not names:
+        return []
+    with ThreadPoolExecutor(max_workers=min(len(names), 8)) as pool:
+        return [service for service in pool.map(check, names) if service is not None]
 
 
 def stats():
