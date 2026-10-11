@@ -40,8 +40,8 @@ def failed_device(device, error):
 
 
 def validate_devices(data):
-    if not isinstance(data, list):
-        raise ConfigurationError("Device configuration must be a JSON array")
+    if not isinstance(data, list) or len(data) > 64:
+        raise ConfigurationError("Device configuration must be a JSON array of at most 64 devices")
     seen = set()
     for index, device in enumerate(data):
         if not isinstance(device, dict):
@@ -102,6 +102,10 @@ def validate_stats(stats):
     }
     for collection, fields in string_fields.items():
         for item in stats.get(collection, []):
+            if collection in ("services", "containers") and any(
+                not isinstance(item.get(key), str) for key in ("name", "state")
+            ):
+                raise ValueError(f"Invalid telemetry: {collection} entries need string name and state")
             for key in fields:
                 if key in item and item[key] is not None and not isinstance(item[key], str):
                     raise ValueError(f"Invalid telemetry: {collection}.{key} must be a string or null")

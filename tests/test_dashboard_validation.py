@@ -15,7 +15,7 @@ DEVICE = {"id": "node", "name": "Fixture Node", "endpoint": "http://node.example
 
 class ConfigurationTests(unittest.TestCase):
     def test_rejects_bad_shapes_duplicate_ids_and_credentials(self):
-        for value in ({}, [None], [{}], [{**DEVICE, "endpoint": 123}],
+        for value in ({}, [None], [{}], [DEVICE] * 65, [{**DEVICE, "endpoint": 123}],
                       [DEVICE, DEVICE], [{**DEVICE, "endpoint": "file:///tmp/fixture"}],
                       [{**DEVICE, "endpoint": "https://user:fixture@node.example"}],
                       [{**DEVICE, "endpoint": "http://node.example:invalid"}],
@@ -82,7 +82,7 @@ class TelemetryValidationTests(unittest.TestCase):
     def test_nested_display_fields_and_nonfinite_numbers_are_rejected(self):
         for extra in ({"specs": {"cpu": {}}}, {"usage": {"cpu": []}},
                       {"containers": [{"name": {}}]}, {"services": [{"state": []}]},
-                      {"drives": [{"capacity": {}}]}, {"uptime": float("inf")}):
+                      {"drives": [{"capacity": {}}]}, {"services": [{"name": "fixture", "state": None}]}, {"uptime": float("inf")}):
             with self.subTest(extra=extra):
                 self.assertEqual(self.fetch({"online": True, **extra})["status"], "down")
 
@@ -92,9 +92,9 @@ class TelemetryValidationTests(unittest.TestCase):
         self.assertNotIn("private", result["error"])
 
     def test_unhealthy_services_containers_and_drives_are_degraded(self):
-        for extra in ({"services": [{"state": "failed"}]},
-                      {"services": [{"state": "unknown"}]},
-                      {"containers": [{"state": "running", "health": "unhealthy"}]},
+        for extra in ({"services": [{"name": "fixture", "state": "failed"}]},
+                      {"services": [{"name": "fixture", "state": "unknown"}]},
+                      {"containers": [{"name": "fixture", "state": "running", "health": "unhealthy"}]},
                       {"drives": [{"health": "warning"}]}):
             with self.subTest(extra=extra):
                 self.assertEqual(self.fetch({"online": True, **extra})["status"], "degraded")
