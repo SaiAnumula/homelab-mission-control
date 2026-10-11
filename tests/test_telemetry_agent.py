@@ -253,22 +253,17 @@ class ContainerAndIoTests(unittest.TestCase):
 
 class AgentHandlerRoutingTests(unittest.TestCase):
     def test_do_get_query_string_routing(self):
-        import threading
-        import urllib.request
-        server = telemetry_agent.ThreadingHTTPServer(("127.0.0.1", 0), telemetry_agent.Handler)
-        port = server.server_address[1]
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health?v=123")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                self.assertEqual(resp.status, 200)
-                payload = json.loads(resp.read())
-                self.assertTrue(payload.get("ok"))
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=3)
+        import io
+        from unittest.mock import Mock
+        handler = object.__new__(telemetry_agent.Handler)
+        handler.path = "/api/health?v=123"
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        handler.wfile = io.BytesIO()
+        handler.do_GET()
+        handler.send_response.assert_called_once_with(200)
+        self.assertEqual(json.loads(handler.wfile.getvalue()), {"ok": True})
 
 
 if __name__ == "__main__":

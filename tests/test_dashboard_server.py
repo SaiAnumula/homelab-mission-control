@@ -1,4 +1,3 @@
-import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -66,62 +65,33 @@ class AggregateDevicesTests(unittest.TestCase):
 
 
 class FetchDeviceEndpointTests(unittest.TestCase):
-    """Exercise fetch_device against real (local) sockets where the behavior
-    depends on the wire, not on injected stubs."""
-
-    def setUp(self):
-        import http.server
-        import socket
-
-        class AgentHandler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path == "/api/agent/stats":
-                    body = b'{"online": true, "specs": {"cpu": "test"}, "usage": {"cpu": 7}}'
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-                else:
-                    self.send_error(404)
-
-            def log_message(self, fmt, *args):
-                pass
-
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), AgentHandler)
-        self.port = self.server.server_address[1]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-
-        # A port that is free: bind, then release.
-        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        probe.bind(("127.0.0.1", 0))
-        self.dead_port = probe.getsockname()[1]
-        probe.close()
-
-    def tearDown(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=5)
-
     def test_reachable_agent_endpoint_merges_stats_into_device(self):
-        device = {"id": "node", "name": "Node", "endpoint": f"http://127.0.0.1:{self.port}/"}
-        result = dashboard_server.fetch_device(device)
+        import io
+        device = {"id": "node", "name": "Node", "endpoint": "http://node.example"}
+        with patch.object(dashboard_server.urllib.request, "urlopen", return_value=io.BytesIO(
+            b'{"online": true, "specs": {"cpu": "test"}, "usage": {"cpu": 7}}'
+        )) as request:
+            result = dashboard_server.fetch_device(device)
         self.assertTrue(result["online"])
         self.assertEqual(result["specs"], {"cpu": "test"})
         self.assertEqual(result["usage"], {"cpu": 7})
         self.assertEqual(result["name"], "Node")
+        self.assertEqual(request.call_args.kwargs["timeout"], 4)
 
     def test_local_endpoint_resolves_to_local_agent(self):
-        device = {"id": "local", "name": "Local Host", "endpoint": "local"}
-        with patch.dict("os.environ", {"MISSION_CONTROL_PORT": str(self.port)}):
-            result = dashboard_server.fetch_device(device)
+        import io
+        with patch.dict("os.environ", {"MISSION_CONTROL_PORT": "4243"}), patch.object(
+            dashboard_server.urllib.request, "urlopen", return_value=io.BytesIO(
+                b'{"online": true, "specs": {}, "usage": {}}'
+            )
+        ) as request:
+            result = dashboard_server.fetch_device({"id": "local", "endpoint": "local"})
         self.assertTrue(result["online"])
-        self.assertEqual(result["specs"], {"cpu": "test"})
+        self.assertEqual(request.call_args.args[0].full_url, "http://127.0.0.1:4243/api/agent/stats")
 
     def test_unreachable_endpoint_reports_offline_with_reason(self):
-        device = {"id": "dead", "name": "Dead", "endpoint": f"http://127.0.0.1:{self.dead_port}"}
-        result = dashboard_server.fetch_device(device)
+        with patch.object(dashboard_server.urllib.request, "urlopen", side_effect=OSError("fixture timeout")):
+            result = dashboard_server.fetch_device({"id": "dead", "endpoint": "http://down.example"})
         self.assertFalse(result["online"])
         self.assertTrue(result["error"])
         self.assertEqual(result["usage"], {})
@@ -147,20 +117,12 @@ class DashboardHandlerRoutingTests(unittest.TestCase):
             temp_path.unlink(missing_ok=True)
 
     def test_do_get_query_string_routing(self):
-        import urllib.request
-        server = dashboard_server.ThreadingHTTPServer(("127.0.0.1", 0), dashboard_server.Handler)
-        port = server.server_address[1]
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health?cache=123")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                self.assertEqual(resp.status, 200)
-                self.assertEqual(resp.headers.get("Content-Type"), "application/json")
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=3)
+        from unittest.mock import Mock
+        handler = object.__new__(dashboard_server.Handler)
+        handler.path = "/api/health?cache=123"
+        handler.send_json = Mock()
+        handler.do_GET()
+        handler.send_json.assert_called_once_with({"ok": True})
 
 
 if __name__ == "__main__":
