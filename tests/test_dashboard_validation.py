@@ -1,3 +1,5 @@
+from tests import safety  # noqa: F401; deny live I/O in targeted test runs
+
 import io
 import json
 import threading
