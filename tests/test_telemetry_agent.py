@@ -71,6 +71,28 @@ class DriveHealthTests(unittest.TestCase):
 
     @patch.object(telemetry_agent.shutil, "which", return_value="/usr/sbin/smartctl")
     @patch.object(telemetry_agent.subprocess, "run")
+    def test_command_error_never_looks_healthy(self, run, _which):
+        for code in (1, 2, 4, 7):
+            with self.subTest(code=code):
+                run.return_value = Completed(json.dumps({"smart_status": {"passed": True}}), code)
+                self.assertEqual(telemetry_agent.drive_health("/dev/sda"), "unavailable")
+
+    @patch.object(telemetry_agent.shutil, "which", return_value="/usr/sbin/smartctl")
+    @patch.object(telemetry_agent.subprocess, "run")
+    def test_disk_failure_exit_flag_still_reports_failing(self, run, _which):
+        run.return_value = Completed(json.dumps({"smart_status": {"passed": False}}), 8)
+        self.assertEqual(telemetry_agent.drive_health("/dev/sda"), "failing")
+
+    @patch.object(telemetry_agent.shutil, "which", return_value="/usr/sbin/smartctl")
+    @patch.object(telemetry_agent.subprocess, "run")
+    def test_false_or_null_nvme_warning_is_not_a_health_confirmation(self, run, _which):
+        for payload in (None, [], {"nvme_smart_health_information_log": {"critical_warning": False}}):
+            with self.subTest(payload=payload):
+                run.return_value = Completed(json.dumps(payload), 0)
+                self.assertEqual(telemetry_agent.drive_health("/dev/sda"), "unavailable")
+
+    @patch.object(telemetry_agent.shutil, "which", return_value="/usr/sbin/smartctl")
+    @patch.object(telemetry_agent.subprocess, "run")
     def test_timeout_surfaces_as_an_error_not_a_status(self, run, _which):
         run.side_effect = subprocess.TimeoutExpired(["smartctl"], 4)
         with self.assertRaises(RuntimeError):

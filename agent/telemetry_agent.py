@@ -209,13 +209,15 @@ def drive_health(path):
         raise RuntimeError(f"SMART health check timed out for {path}") from error
     except json.JSONDecodeError as error:
         raise RuntimeError(f"SMART health check returned invalid data for {path}") from error
+    if result.returncode & 7 or not isinstance(payload, dict):
+        return "unavailable"
     passed = payload.get("smart_status", {}).get("passed")
     critical = payload.get("nvme_smart_health_information_log", {}).get("critical_warning")
     if passed is False:
         return "failing"
-    if isinstance(critical, int) and critical:
+    if isinstance(critical, int) and not isinstance(critical, bool) and critical:
         return "warning"
-    if passed is True or critical == 0:
+    if passed is True or (type(critical) is int and critical == 0):
         return "healthy"
     return "unavailable"
 
