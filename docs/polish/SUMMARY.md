@@ -1,6 +1,9 @@
 # Mission Control polish — 2026-10-11
 
-All work is committed on `polish-oct11`. Nothing was pushed or merged.
+This records the October 11 polish work and its original validation. The work
+was later consolidated into `main` with the October 15 connection-recovery
+change. The cache and polling behavior below describes the October 11 version;
+see the README for current behavior.
 
 ## Changes
 

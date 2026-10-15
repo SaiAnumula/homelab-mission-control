@@ -1,7 +1,9 @@
 export function deviceStatus(device, stale = false, now = Date.now()) {
   const checked = Date.parse(device.checkedAt)
   const collected = device.collectedAt ? Date.parse(device.collectedAt) : checked
-  if (stale || !Number.isFinite(checked) || !Number.isFinite(collected) || now - Math.min(checked, collected) > 25000) return 'stale'
+  if (stale || device.status === 'stale') return 'stale'
+  if (device.status === 'down') return 'down'
+  if (!Number.isFinite(checked) || !Number.isFinite(collected) || now - Math.min(checked, collected) > 25000) return 'stale'
   if (!device.online) return 'down'
   if (device.status === 'degraded' || device.drives?.some(item => ['warning', 'failing'].includes(item.health)) || device.containers?.some(item => item.state !== 'running' || ['unhealthy', 'starting'].includes(item.health)) || device.services?.some(item => item.state !== 'active')) return 'degraded'
   return 'up'
@@ -27,19 +29,22 @@ export function createPoller({ fetcher = fetch, onData, onError, onLoading, inte
     deadline = schedule(() => controller.abort(), timeout)
     onLoading(true)
     pending = (async () => {
+      let delay = interval
       try {
         // Defer transport execution so even synchronous throws release pending.
         await Promise.resolve()
         const response = await fetcher('/api/devices', { signal: controller.signal })
         if (!response.ok) throw new Error('Telemetry service unavailable')
         const data = validateTelemetry(await response.json())
+        if (data.devices.some(device => ['stale', 'down'].includes(device.status) || !device.online)) delay = 1000
         if (!stopped) onData(data)
       } catch (error) {
+        delay = 1000
         if (!stopped) onError(error.name === 'AbortError' ? 'Telemetry request timed out; displayed data is stale' : error.message)
       } finally {
         cancel(deadline)
         pending = undefined
-        if (!stopped) { onLoading(false); next = schedule(refresh, interval) }
+        if (!stopped) { onLoading(false); next = schedule(refresh, delay) }
       }
     })()
     return pending

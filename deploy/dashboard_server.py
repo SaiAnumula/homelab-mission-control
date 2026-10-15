@@ -20,7 +20,10 @@ DIST = ROOT / "dist"
 MAX_FETCH_WORKERS = 8
 
 
-CACHE_SECONDS = 10
+HEALTHY_CHECK_SECONDS = 10
+RECOVERY_SECONDS = 1
+DOWN_AFTER_SECONDS = 10
+DOWN_CHECK_SECONDS = 15
 MAX_RESPONSE_BYTES = 1024 * 1024
 PUBLIC_DEVICE_FIELDS = ("id", "name", "label", "type", "accent")
 TELEMETRY_FIELDS = ("online", "os", "uptime", "specs", "usage", "drives", "containers", "services", "error", "collectedAt")
@@ -128,6 +131,19 @@ def reject_constant(_value):
     raise ValueError("Invalid telemetry: non-finite JSON number")
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def open_endpoint(request, timeout):
+    try:
+        return urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout)
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise
+
+
 def fetch_device(device):
     raw_endpoint = (device.get("endpoint") or "").strip().rstrip("/")
     if not raw_endpoint:
@@ -139,7 +155,7 @@ def fetch_device(device):
         endpoint = raw_endpoint
     try:
         request = urllib.request.Request(f"{endpoint}/api/agent/stats")
-        with urllib.request.urlopen(request, timeout=4) as response:
+        with open_endpoint(request, timeout=4) as response:
             body = response.read(MAX_RESPONSE_BYTES + 1)
             if len(body) > MAX_RESPONSE_BYTES:
                 raise ValueError("Telemetry response exceeds size limit")
@@ -159,42 +175,149 @@ def load_devices():
         raise ConfigurationError("Cannot read device configuration; check its path and JSON syntax") from error
 
 
-def aggregate_devices(devices):
-    """Fetch every endpoint concurrently so a single slow or offline node cannot
-    stretch the refresh cycle for the rest. Per-device failures stay offline
-    instead of failing the whole batch."""
-    if not devices:
-        return []
-    def safe_fetch(device):
-        try:
-            return fetch_device(device)
-        except Exception:  # A worker failure must not take down every card.
-            return failed_device(device, "Telemetry fetch failed")
-    with ThreadPoolExecutor(max_workers=min(len(devices), MAX_FETCH_WORKERS)) as pool:
-        return list(pool.map(safe_fetch, devices))
+def check_health(device):
+    endpoint = device.get("endpoint", "").strip().rstrip("/")
+    if endpoint == "local":
+        endpoint = f"http://127.0.0.1:{os.environ.get('MISSION_CONTROL_PORT', '4242')}"
+    if not endpoint:
+        return False
+    try:
+        with open_endpoint(f"{endpoint}/api/health", timeout=1) as response:
+            body = response.read(16385)
+            return len(body) <= 16384 and json.loads(body).get("ok") is True
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
-class DeviceCache:
-    """One refresh at a time across browser clients; failures are cached too."""
-    def __init__(self):
+class DeviceMonitor:
+    """Background checks shared by all clients, with one job per device."""
+    def __init__(self, fetch=fetch_device, health=check_health, now=time.monotonic):
         self._lock = threading.Lock()
-        self._devices = None
-        self._payload = None
-        self._expires = 0
+        self._entries = {}
+        self._fetch = fetch
+        self._health = health
+        self._now = now
+        self._stop = threading.Event()
+        self._thread = None
+        self._pool = None
+        self._active = 0
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._pool = ThreadPoolExecutor(max_workers=MAX_FETCH_WORKERS)
+        self._thread = threading.Thread(target=self._run, daemon=True, name="device-monitor")
+        self._thread.start()
+
+    def close(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join()
+        if self._pool:
+            self._pool.shutdown(wait=True, cancel_futures=True)
+            self._pool = None
+
+    def _run(self):
+        while not self._stop.is_set():
+            self.run_due()
+            self._stop.wait(0.1)
+
+    def run_due(self):
+        with self._lock:
+            if self._pool is None:
+                return
+            # Submit only available worker slots, rather than queueing stale jobs.
+            available = max(0, MAX_FETCH_WORKERS - self._active)
+            due = sorted((e for e in self._entries.values()
+                          if not e["pending"] and e["due"] <= self._now()), key=lambda e: e["due"])
+            for entry in due[:available]:
+                entry["pending"] = True
+                self._active += 1
+                self._pool.submit(self._check, entry)
+
+    def _is_down(self, entry):
+        return (entry["failed_since"] is not None
+                and self._now() - entry["failed_since"] >= DOWN_AFTER_SECONDS)
+
+    def _check(self, entry):
+        try:
+            self._collect(entry)
+        except Exception:
+            with self._lock:
+                entry["recovering"] = True
+                entry["error"] = "Telemetry check failed"
+                if entry["failed_since"] is None:
+                    entry["failed_since"] = self._now()
+                entry["due"] = self._now() + RECOVERY_SECONDS
+        finally:
+            with self._lock:
+                entry["pending"] = False
+                self._active -= 1
+
+    def _collect(self, entry):
+        started = self._now()
+        reachable = False
+        result = None
+        try:
+            if entry["recovering"]:
+                reachable = self._health(entry["device"])
+                if reachable:
+                    # A live health endpoint establishes reachability even if
+                    # the slower metrics request fails or is still in progress.
+                    with self._lock:
+                        entry["failed_since"] = None
+            if not entry["recovering"] or reachable:
+                result = self._fetch(entry["device"])
+        except Exception:
+            result = failed_device(entry["device"], "Telemetry check failed")
+        with self._lock:
+            entry["checked_at"] = datetime.now(timezone.utc).isoformat()
+            if result and result.get("online"):
+                entry["last_good"] = result
+                entry["recovering"] = False
+                entry["failed_since"] = None
+                entry["error"] = None
+            else:
+                entry["recovering"] = True
+                entry["error"] = ("Telemetry delayed; device responds to health checks" if reachable
+                                  else "Telemetry unavailable; checking connection")
+                if not reachable and entry["failed_since"] is None:
+                    entry["failed_since"] = self._now()
+            interval = (DOWN_CHECK_SECONDS if self._is_down(entry) else
+                        RECOVERY_SECONDS if entry["recovering"] else HEALTHY_CHECK_SECONDS)
+            entry["due"] = max(started + interval, self._now())
 
     def get(self, devices):
         with self._lock:
-            if self._payload is not None and self._devices == devices and time.monotonic() < self._expires:
-                return self._payload
-            results = aggregate_devices(devices)
-            payload = {"devices": results, "updatedAt": datetime.now(timezone.utc).isoformat()}
-            self._devices = devices
-            self._payload = payload
-            self._expires = time.monotonic() + CACHE_SECONDS
-            return payload
+            entries = {}
+            for device in devices:
+                entry = self._entries.get(device["id"])
+                if entry is None or entry["device"].get("endpoint") != device.get("endpoint"):
+                    entry = {"device": dict(device), "last_good": None, "failed_since": None,
+                             "recovering": False, "pending": False, "due": 0,
+                             "checked_at": None, "error": "Waiting for first telemetry check"}
+                entry["device"] = dict(device)
+                entries[device["id"]] = entry
+            self._entries = entries
+            results = []
+            for entry in entries.values():
+                result = dict(entry["last_good"] or {
+                    **public_device(entry["device"]), "online": False, "specs": {}, "usage": {},
+                })
+                if entry["recovering"] or entry["last_good"] is None:
+                    down = self._is_down(entry)
+                    result.update(status="down" if down else "stale", error=entry["error"])
+                    if down:
+                        result["online"] = False
+                    result["lastGoodAt"] = (entry["last_good"] or {}).get("checkedAt")
+                result["checkedAt"] = entry["checked_at"]
+                result.update(public_device(entry["device"]))
+                results.append(result)
+            return {"devices": results, "updatedAt": datetime.now(timezone.utc).isoformat()}
 
 
-DEVICE_CACHE = DeviceCache()
+DEVICE_MONITOR = DeviceMonitor()
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -207,9 +330,11 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"ok": True})
         if path == "/api/devices":
             try:
-                return self.send_json(DEVICE_CACHE.get(load_devices()))
+                return self.send_json(DEVICE_MONITOR.get(load_devices()))
             except ConfigurationError as error:
                 return self.send_json({"error": str(error)}, status=503)
+        if path == "/api" or path.startswith("/api/"):
+            return self.send_json({"error": "Not found"}, status=404)
         if not path.startswith("/assets/") and not (DIST / path.lstrip("/")).is_file():
             self.path = "/index.html"
         return super().do_GET()
@@ -228,4 +353,9 @@ if __name__ == "__main__":
     host = os.environ.get("MISSION_CONTROL_DASHBOARD_HOST", os.environ.get("MISSION_CONTROL_HOST", "0.0.0.0")).strip() or "0.0.0.0"
     port = int(os.environ.get("MISSION_CONTROL_DASHBOARD_PORT", "8080"))
     print(f"Mission Control dashboard listening on {host}:{port}", flush=True)
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    DEVICE_MONITOR.start()
+    try:
+        with ThreadingHTTPServer((host, port), Handler) as server:
+            server.serve_forever()
+    finally:
+        DEVICE_MONITOR.close()

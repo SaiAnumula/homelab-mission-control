@@ -1,4 +1,6 @@
 // Import-safe telemetry helpers. Tests inject collectors; this module never probes hosts.
+import { performance } from 'node:perf_hooks'
+import { setInterval, clearInterval } from 'node:timers'
 const fields = (value, names) => Object.fromEntries(names.filter(key => value?.[key] !== undefined).map(key => {
   if (value[key] !== null && !['string', 'number', 'boolean'].includes(typeof value[key])) throw new Error('Invalid telemetry field')
   return [key, value[key]]
@@ -40,7 +42,8 @@ export function publicDevice(device, stats, checkedAt) {
     })
   }
   // Trusted configuration wins; endpoint and credentials never reach the client.
-  return { ...result, ...fields(device, ['id', 'name', 'label', 'type', 'accent']), checkedAt }
+  const degraded = result.drives.some(item => ['warning', 'failing'].includes(item.health)) || result.containers.some(item => item.state !== 'running' || ['unhealthy', 'starting'].includes(item.health)) || result.services.some(item => item.state !== 'active')
+  return { ...result, ...fields(device, ['id', 'name', 'label', 'type', 'accent']), online: stats.online, status: !result.online ? 'down' : degraded ? 'degraded' : 'up', checkedAt }
 }
 export function createCachedCollector(collect, { ttl = 10000, now = Date.now } = {}) {
   let cached, expires = 0, pending
@@ -56,4 +59,92 @@ export async function collectDevices(devices, collect, now = () => new Date().to
     try { return publicDevice(device, await collect(device, index), now()) }
     catch { return { ...fields(device, ['id', 'name', 'label', 'type', 'accent']), online: false, error: 'Telemetry unavailable', usage: {}, specs: {}, checkedAt: now() } }
   }))
+}
+
+export function createDeviceMonitor({ collect, health, now = () => performance.now(), stamp = () => new Date().toISOString(), maxWorkers = 8, schedule = setInterval, cancel = clearInterval }) {
+  /** @typedef {{device: any, index: number, lastGood: ReturnType<typeof publicDevice> | null, failedSince: number | null, recovering: boolean, pending: boolean, due: number, checkedAt?: string, error?: string}} Entry */
+  /** @type {Map<string, Entry>} */
+  let entries = new Map()
+  let active = 0, timer
+  /** @param {Entry} entry */
+  const isDown = entry => entry.failedSince !== null && now() - entry.failedSince >= 10000
+  /** @param {Entry} entry */
+  const collectEntry = async entry => {
+    const started = now()
+    let reachable = false, result, retryCollection = !entry.recovering
+    try {
+      if (entry.recovering) {
+        const healthResult = await health(entry.device)
+        reachable = healthResult === true
+        retryCollection = reachable || healthResult === null
+        if (reachable) entry.failedSince = null
+      }
+      if (retryCollection) result = publicDevice(entry.device, await collect(entry.device, entry.index), stamp())
+    } catch { /* Public errors below never include endpoint details. */ }
+    entry.checkedAt = stamp()
+    if (result?.online) {
+      entry.lastGood = result
+      entry.recovering = false
+      entry.failedSince = null
+      entry.error = undefined
+    } else {
+      entry.recovering = true
+      entry.error = reachable ? 'Telemetry delayed; device responds to health checks' : 'Telemetry unavailable; checking connection'
+      if (!reachable && entry.failedSince === null) entry.failedSince = now()
+    }
+    const interval = isDown(entry) ? 15000 : entry.recovering ? 1000 : 10000
+    entry.due = Math.max(started + interval, now())
+  }
+  /** @param {Entry} entry */
+  const check = async entry => {
+    try {
+      await collectEntry(entry)
+    } catch {
+      entry.recovering = true
+      entry.error = 'Telemetry check failed'
+      entry.failedSince ??= now()
+      entry.due = now() + 1000
+    } finally {
+      entry.pending = false
+      active--
+    }
+  }
+  const runDue = () => {
+    const due = [...entries.values()].filter(entry => !entry.pending && entry.due <= now()).sort((a, b) => a.due - b.due)
+    const jobs = due.slice(0, Math.max(0, maxWorkers - active)).map(entry => {
+      entry.pending = true
+      active++
+      return check(entry)
+    })
+    return Promise.all(jobs)
+  }
+  return {
+    get(devices) {
+      validateDevices(devices)
+      const next = new Map()
+      for (const [index, device] of devices.entries()) {
+        let entry = entries.get(device.id)
+        if (!entry || entry.device.endpoint !== device.endpoint) entry = { device: { ...device }, index, lastGood: null, failedSince: null, recovering: false, pending: false, due: 0, checkedAt: undefined, error: 'Waiting for first telemetry check' }
+        entry.device = { ...device }
+        entry.index = index
+        next.set(device.id, entry)
+      }
+      entries = next
+      const results = [...entries.values()].map(entry => {
+        /** @type {Record<string, any>} */
+        const result = { online: false, specs: {}, usage: {}, ...entry.lastGood, ...fields(entry.device, ['id', 'name', 'label', 'type', 'accent']), checkedAt: entry.checkedAt }
+        if (entry.recovering || !entry.lastGood) {
+          result.status = isDown(entry) ? 'down' : 'stale'
+          if (result.status === 'down') result.online = false
+          result.error = entry.error
+          result.lastGoodAt = entry.lastGood?.checkedAt
+        }
+        return result
+      })
+      return { devices: results, updatedAt: stamp() }
+    },
+    runDue,
+    start() { timer ??= schedule(() => { void runDue() }, 100) },
+    stop() { cancel(timer); timer = undefined },
+  }
 }

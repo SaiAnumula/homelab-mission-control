@@ -101,20 +101,36 @@ checks use mocks exclusively; the test suite starts no server and performs no
 Docker, SSH, or systemctl operation. Node tests import pure helpers with injected
 collectors; they never import the executable `server.js` or start host monitoring.
 
-Automatic browser refresh waits ten seconds **after** the preceding request
-finishes. Requests time out after six seconds; concurrent manual refresh clicks
-share the in-flight request. Failed requests retain the previous snapshot with
-STALE labels. Per-device checks and the footer show timestamps. Inactive services,
+Automatic browser refresh waits ten seconds after the preceding request finishes
+when every device has fresh telemetry. During recovery or a device outage it reads
+the server's current snapshot every second. Requests time out after six seconds;
+concurrent manual refresh clicks share the in-flight request. Returning to a
+visible tab refreshes immediately. Failed requests retain the previous snapshot
+with STALE labels. Per-device checks and the footer show timestamps. Inactive services,
 unhealthy/starting containers, and warning/failing drives make a reachable node
 DEGRADED rather than UP.
 
-The Python dashboard and Node API share a ten-second cache across clients, and
-the Python agent shares one cached collection round. Endpoint failures are also
-cached, limiting retry pressure. Python endpoint requests use a four-second
-socket timeout, eight-worker cap, and one-MiB response limit. Agent responses
-cannot replace configured identity or expose endpoint/credential fields.
+The Python dashboard and Node API collect telemetry in background workers shared
+across clients. API reads return snapshots without waiting for agents. Healthy
+devices have a ten-second collection interval. After a failed collection, the
+server retains the last successful metrics as STALE and checks `/api/health`
+every second with a one-second timeout. A successful health check triggers a
+telemetry request immediately. A reachable device with unavailable metrics stays
+STALE. Ten seconds of failed connectivity checks makes the device DOWN, and
+health checks then run every fifteen seconds. DOWN cards retain old metrics with
+an outdated-values label. Recovery clears that state after fresh telemetry arrives.
+Intervals run from the start of each check; checks never overlap for one device.
+Both backends cap workers at eight, so busy installations can delay checks.
+Node's local and demo collectors retry collection directly because they have no
+remote health endpoint. Initial snapshots show STALE while the first check runs.
+
+The Python agent and Node local collector share cached collection rounds.
+Python telemetry requests use a four-second socket timeout and one-MiB response
+limit. Agent responses cannot replace configured identity or expose endpoint or
+credential fields.
 `collectedAt` records the Python agent's snapshot creation time; `checkedAt`
-records the dashboard's endpoint check. A cache hit preserves these timestamps.
+records the dashboard's latest completed check. During an outage, `lastGoodAt`
+records the last successful telemetry check.
 Individual agent subprocesses have deadlines, but the first full collection has
 no global deadline and can still exceed the endpoint timeout on slow hardware.
 

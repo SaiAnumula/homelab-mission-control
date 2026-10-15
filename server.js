@@ -1,4 +1,4 @@
-import { collectDevices, createCachedCollector, validateDevices } from './telemetry.js'
+import { createDeviceMonitor, createCachedCollector, validateDevices } from './telemetry.js'
 import express from 'express'
 import si from 'systeminformation'
 import fs from 'node:fs/promises'
@@ -146,9 +146,8 @@ async function getDevices() {
 }
 
 const cachedLocalStats = createCachedCollector(localStats)
-const cachedDevices = createCachedCollector(async () => {
-  const devices = await getDevices()
-  const results = await collectDevices(devices, async (device, index) => {
+const deviceMonitor = createDeviceMonitor({
+  collect: async (device, index) => {
     if (device.endpoint === 'local') return cachedLocalStats()
     if (device.endpoint === 'demo') return demoStats(device, index)
     const response = await fetch(`${device.endpoint.replace(/\/$/, '')}/api/agent/stats`, {
@@ -158,19 +157,30 @@ const cachedDevices = createCachedCollector(async () => {
     })
     if (!response.ok) throw new Error('Telemetry unavailable')
     return response.json()
-  })
-  return { devices: results, updatedAt: new Date().toISOString() }
+  },
+  health: async device => {
+    if (['local', 'demo'].includes(device.endpoint)) return null
+    try {
+      const response = await fetch(`${device.endpoint.replace(/\/$/, '')}/api/health`, {
+        signal: AbortSignal.timeout(1000), redirect: 'error',
+        headers: device.token ? { Authorization: `Bearer ${device.token}` } : {},
+      })
+      return response.ok && (await response.json()).ok === true
+    } catch { return false }
+  },
 })
+deviceMonitor.start()
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }))
 app.get('/api/devices', async (_req, res) => {
-  try { res.json(await cachedDevices()) }
+  try { res.json(deviceMonitor.get(await getDevices())) }
   catch { res.status(500).json({ error: 'Unable to load telemetry configuration' }) }
 })
 
 app.get('/api/agent/stats', async (_req, res) => {
   try { res.json(await cachedLocalStats()) } catch (error) { res.status(500).json({ error: error.message }) }
 })
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }))
 
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(root, 'dist')))

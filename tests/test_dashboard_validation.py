@@ -2,8 +2,6 @@ from tests import safety  # noqa: F401; deny live I/O in targeted test runs
 
 import io
 import json
-import threading
-import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -41,7 +39,7 @@ class ConfigurationTests(unittest.TestCase):
         handler.path = "/api/devices"
         handler.send_json = Mock()
         with patch.object(dashboard, "load_devices", return_value=[DEVICE]), patch.object(
-            dashboard, "DEVICE_CACHE"
+            dashboard, "DEVICE_MONITOR"
         ) as cache:
             cache.get.return_value = {"devices": []}
             handler.do_GET()
@@ -51,7 +49,7 @@ class ConfigurationTests(unittest.TestCase):
 
 class TelemetryValidationTests(unittest.TestCase):
     def fetch(self, payload, device=None):
-        with patch.object(dashboard.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(payload).encode())):
+        with patch.object(dashboard, "open_endpoint", return_value=io.BytesIO(json.dumps(payload).encode())):
             return dashboard.fetch_device(device or DEVICE)
 
     def test_identity_and_private_config_do_not_leave_backend(self):
@@ -76,7 +74,7 @@ class TelemetryValidationTests(unittest.TestCase):
     def test_truncated_and_oversized_responses_report_down(self):
         for body in (b'{"online":', b'{"online": true, "uptime": NaN}',
                      b"x" * (dashboard.MAX_RESPONSE_BYTES + 1)):
-            with patch.object(dashboard.urllib.request, "urlopen", return_value=io.BytesIO(body)):
+            with patch.object(dashboard, "open_endpoint", return_value=io.BytesIO(body)):
                 self.assertEqual(dashboard.fetch_device(DEVICE)["status"], "down")
 
     def test_nested_display_fields_and_nonfinite_numbers_are_rejected(self):
@@ -87,7 +85,7 @@ class TelemetryValidationTests(unittest.TestCase):
                 self.assertEqual(self.fetch({"online": True, **extra})["status"], "down")
 
     def test_network_error_does_not_disclose_endpoint(self):
-        with patch.object(dashboard.urllib.request, "urlopen", side_effect=OSError("private fixture URL")):
+        with patch.object(dashboard, "open_endpoint", side_effect=OSError("private fixture URL")):
             result = dashboard.fetch_device(DEVICE)
         self.assertNotIn("private", result["error"])
 
@@ -110,37 +108,6 @@ class TelemetryValidationTests(unittest.TestCase):
         handler.send_response.assert_called_once_with(503)
         handler.send_header.assert_any_call("Cache-Control", "no-store")
         self.assertEqual(json.loads(handler.wfile.getvalue()), {"error": "fixture"})
-
-
-class CacheTests(unittest.TestCase):
-    def test_expiry_config_changes_and_failed_checks(self):
-        cache = dashboard.DeviceCache()
-        with patch.object(dashboard, "aggregate_devices", return_value=[{"status": "down"}]) as fetch, patch.object(
-            dashboard.time, "monotonic", return_value=100
-        ) as clock:
-            first = cache.get([DEVICE])
-            self.assertIs(cache.get([DEVICE]), first)
-            self.assertEqual(fetch.call_count, 1)
-            clock.return_value = 110
-            cache.get([DEVICE])
-            self.assertEqual(fetch.call_count, 2)
-            cache.get([{**DEVICE, "name": "Changed"}])
-            self.assertEqual(fetch.call_count, 3)
-
-    def test_concurrent_clients_share_one_fetch(self):
-        cache = dashboard.DeviceCache()
-        results = []
-        def fixture(_devices):
-            time.sleep(0.05)
-            return [{"online": False}]
-        with patch.object(dashboard, "aggregate_devices", side_effect=fixture) as fetch:
-            workers = [threading.Thread(target=lambda: results.append(cache.get([DEVICE]))) for _ in range(8)]
-            for worker in workers:
-                worker.start()
-            for worker in workers:
-                worker.join(timeout=2)
-            self.assertEqual(len(results), 8)
-            self.assertEqual(fetch.call_count, 1)
 
 
 if __name__ == "__main__":

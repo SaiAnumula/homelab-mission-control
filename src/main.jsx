@@ -71,10 +71,10 @@ function DeviceCard({ device, index, stale }) {
     </div>
     {device.demo && <div className="demo-tag">DEMO DATA · configure endpoint to connect</div>}
     <div className="system-line">
-      <span>{device.online ? (device.os || 'System unavailable') : (device.error ? `OFFLINE · ${device.error}` : 'Host unreachable')}</span>
-      <span>{device.online ? `UP ${formatUptime(device.uptime)}` : 'DISCONNECTED'}</span>
+      <span>{status === 'stale' ? (device.error || 'Telemetry may be outdated') : device.online ? (device.os || 'System unavailable') : 'Host unreachable'}</span>
+      <span>{status === 'stale' ? (device.uptime != null ? `LAST UP ${formatUptime(device.uptime)}` : 'CONNECTING') : device.online ? `UP ${formatUptime(device.uptime)}` : 'DISCONNECTED'}</span>
     </div>
-    <div className="last-checked">Last checked: {Number.isFinite(Date.parse(device.checkedAt)) ? new Date(device.checkedAt).toLocaleTimeString() : 'Unknown'}{status === 'stale' && ' · Values may be outdated'}</div>
+    <div className="last-checked">Last checked: {Number.isFinite(Date.parse(device.checkedAt)) ? new Date(device.checkedAt).toLocaleTimeString() : 'Waiting'}{['stale', 'down'].includes(status) && ' · Values may be outdated'}{device.lastGoodAt && ` · Last telemetry: ${new Date(device.lastGoodAt).toLocaleTimeString()}`}</div>
     <div className="spec-grid">
       <div><small>PROCESSOR</small><b><TooltipText>{device.specs?.cpu}</TooltipText></b><em>{device.specs?.cores}</em></div>
       <div><small>MEMORY</small><b>{device.specs?.memory || '—'}</b></div>
@@ -145,7 +145,17 @@ function App() {
     })
     poller.current = active
     active.refresh()
-    return () => { active.stop(); poller.current = null }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        active.refresh()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      active.stop()
+      poller.current = null
+    }
   }, [])
   const stale = Boolean(error)
   const online = data.devices.filter(d => deviceStatus(d, stale) === 'up').length
@@ -164,7 +174,7 @@ function App() {
       {!loading && !error && !data.devices.length && <div className="loading">No devices configured. Add nodes to your local configuration.</div>}
       {data.devices.map((device, i) => <DeviceCard device={device} index={i} stale={stale} key={device.id}/>) }
     </section>}
-    <footer><span><ShieldCheck size={14}/> SECURE LOCAL TELEMETRY</span><span>POLL 10S AFTER COMPLETION</span><span><Database size={14}/> {data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : 'WAITING'}</span></footer>
+    <footer><span><ShieldCheck size={14}/> SECURE LOCAL TELEMETRY</span><span>{error || data.devices.some(d => ['stale', 'down'].includes(deviceStatus(d))) ? 'RECOVERY VIEW · 1S' : 'TELEMETRY · 10S'}</span><span><Database size={14}/> {data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : 'WAITING'}</span></footer>
   </main>
 }
 
