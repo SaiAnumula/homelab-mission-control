@@ -2,49 +2,51 @@
 
 ## Earlier observations
 
-The October 14 audit recorded these observations on the deployed homelab:
+The October 14 audit of the deployed homelab recorded the following:
 
-- The Main PC and Home Server returned telemetry. The Vivobook was unreachable.
-- The Home Server's `nvidia-smi` reported a driver and NVML library mismatch.
-  Loading the matching kernel driver, usually through a planned reboot, should
-  restore GPU telemetry. This was not rechecked or changed during the October 15
-  connection investigation.
-- The Main PC's root disk was 87% used at the time. This is a dated reading,
-  rather than a current capacity measurement.
+- The Main PC and the Home Server returned telemetry. The Vivobook was unreachable.
+- On the Home Server, `nvidia-smi` reported a mismatch between the driver and
+  the NVML library. Loading the matching kernel driver, usually with a planned
+  reboot, should restore GPU telemetry. Nobody rechecked or changed this during
+  the October 15 connection investigation.
+- The Main PC's root disk was 87% full on October 14. Treat this as a dated
+  reading, not current capacity.
 
-Private endpoints belong in the ignored runtime configuration. The repository's
-example configurations use reserved documentation hostnames.
+Private endpoints belong in the ignored runtime configuration. The example
+configurations in the repository use reserved documentation hostnames.
 
 ## October 15 connection investigation
 
-The dashboard opened at 11:54:05 AM Eastern. The PC's Tailscale log selected a
-direct path to the Home Server at 11:54:06. The first dashboard API request
-finished at 11:54:10, while the PC's telemetry collection followed at 11:54:12.
-The PC agent had no service restarts. A later check from the Home Server took
-0.17 seconds for health and 0.54 seconds for telemetry.
+The dashboard opened at 11:54:05 AM Eastern. At 11:54:06, the PC's Tailscale
+log chose a direct path to the Home Server. The first dashboard API request
+finished at 11:54:10, and the PC's telemetry collection followed at 11:54:12.
+The PC agent had not restarted. A later check from the Home Server took 0.17
+seconds for health and 0.54 seconds for telemetry.
 
-The timing suggests that the first connection exceeded the dashboard's
-four-second timeout. Individual endpoint failures were not logged, so the exact
-failure could not be confirmed. The previous server marked one failed request
-DOWN and cached the result for ten seconds, extending the visible interruption.
+The timing suggests the first connection took longer than the dashboard's
+four-second timeout. The server didn't log individual endpoint failures, so we
+couldn't confirm the exact failure. The old server marked a device DOWN after
+one failed request and cached that result for ten seconds, which made the
+visible outage longer.
 
-The connection-recovery change keeps old readings marked STALE, retries health
-checks every second, marks DOWN after ten seconds of failed connectivity checks,
-and checks DOWN devices every fifteen seconds. Background workers share checks
-across browser clients. The README describes the current behavior and limits.
+After the connection-recovery change, the server keeps old readings and marks
+them STALE. It retries health checks every second, marks a device DOWN after ten
+seconds of failed connectivity checks, and checks DOWN devices every fifteen
+seconds. Background workers share checks across browser clients. The README
+describes the current behavior and limits.
 
 ## Possible later work
 
-These proposals are not implemented by the connection-recovery change:
+The connection-recovery change doesn't implement any of these:
 
-- Add alerts for sustained outages, low disk space, failed services, and failing
+- Alerts for sustained outages, low disk space, failed services, and failing
   SMART checks. Notifications need deduplication and recovery notices.
-- Store metric history and uptime summaries, with a retention policy.
-- Add authenticated container or service controls only if remote control is
-  needed. Monitoring currently reads system state without controlling services.
-- Explore optional Tailscale discovery rather than requiring manual endpoints.
-- Cache slow hardware inventory separately from frequently sampled metrics and
-  give collection an overall deadline.
-- Evaluate connection reuse and response compression if measurements justify
-  them. Refresh on tab focus is included; polling still runs in hidden tabs,
-  subject to browser timer throttling.
+- Metric history and uptime summaries, with a retention policy.
+- Authenticated container or service controls, only if remote control becomes
+  necessary. Monitoring reads system state and controls nothing.
+- Optional Tailscale discovery, so endpoints don't have to be listed by hand.
+- A separate cache for slow hardware inventory, refreshed less often than
+  fast-changing metrics, and an overall deadline for collection.
+- Connection reuse and response compression, if measurements show they help.
+  The dashboard refreshes when its tab regains focus. Hidden tabs still poll,
+  subject to the browser's timer throttling.
