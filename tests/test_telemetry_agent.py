@@ -34,6 +34,9 @@ class TelemetryFormattingTests(unittest.TestCase):
 
 
 class StorageTests(unittest.TestCase):
+    def setUp(self):
+        telemetry_agent._HEALTH_CACHE = {}
+
     @patch.dict(os.environ, {"MISSION_CONTROL_SMARTCTL_SUDO": "1"})
     @patch.object(telemetry_agent.shutil, "which", return_value="/usr/sbin/smartctl")
     @patch.object(telemetry_agent.subprocess, "run")
@@ -41,7 +44,7 @@ class StorageTests(unittest.TestCase):
         run.return_value = Completed(json.dumps({"smart_status": {"passed": True}}), 0)
 
         self.assertEqual(telemetry_agent.drive_health("/dev/sda"), "healthy")
-        self.assertEqual(run.call_args.args[0], ["sudo", "-n", "/usr/sbin/smartctl", "-H", "-j", "/dev/sda"])
+        self.assertEqual(run.call_args.args[0], ["sudo", "-n", "/usr/sbin/smartctl", "-n", "standby,3", "-H", "-j", "/dev/sda"])
 
     @patch.object(telemetry_agent, "drive_health", return_value="healthy")
     @patch.object(telemetry_agent.shutil, "disk_usage", return_value=Usage(128_000_000_000, 32_000_000_000, 96_000_000_000))
@@ -111,8 +114,57 @@ class DriveHealthTests(unittest.TestCase):
         run.return_value = Completed(json.dumps({}), 1)
         self.assertEqual(telemetry_agent.drive_health("/dev/sda"), "unavailable")
 
+    @patch.object(telemetry_agent.shutil, "which", return_value="/usr/sbin/smartctl")
+    @patch.object(telemetry_agent.subprocess, "run")
+    def test_sleeping_drive_is_skipped_not_woken(self, run, _which):
+        run.return_value = Completed(json.dumps({}), 3)
+        self.assertEqual(telemetry_agent.drive_health("/dev/sda"), "standby")
+        self.assertEqual(run.call_args.args[0][1:3], ["-n", "standby,3"])
+
+
+class HealthCacheTests(unittest.TestCase):
+    def setUp(self):
+        telemetry_agent._HEALTH_CACHE = {}
+
+    @patch.object(telemetry_agent, "drive_health", return_value="healthy")
+    def test_result_is_reused_until_the_interval_passes(self, probe):
+        devices = [{"device": "/dev/sda"}]
+        with patch.object(telemetry_agent.time, "monotonic", return_value=1000.0):
+            telemetry_agent.collect_drive_health(devices)
+        with patch.object(telemetry_agent.time, "monotonic", return_value=1000.0 + telemetry_agent.SMART_INTERVAL_SECONDS - 1):
+            self.assertEqual(telemetry_agent.collect_drive_health(devices), {"/dev/sda": "healthy"})
+        self.assertEqual(probe.call_count, 1)
+
+        with patch.object(telemetry_agent.time, "monotonic", return_value=1000.0 + telemetry_agent.SMART_INTERVAL_SECONDS):
+            telemetry_agent.collect_drive_health(devices)
+        self.assertEqual(probe.call_count, 2)
+
+    @patch.object(telemetry_agent, "drive_health")
+    def test_sleeping_drive_keeps_its_last_result(self, probe):
+        devices = [{"device": "/dev/sda"}]
+        probe.return_value = "failing"
+        with patch.object(telemetry_agent.time, "monotonic", return_value=1000.0):
+            telemetry_agent.collect_drive_health(devices)
+        probe.return_value = "standby"
+        with patch.object(telemetry_agent.time, "monotonic", return_value=1000.0 + telemetry_agent.SMART_INTERVAL_SECONDS):
+            self.assertEqual(telemetry_agent.collect_drive_health(devices), {"/dev/sda": "failing"})
+
+    @patch.object(telemetry_agent, "drive_health", return_value="standby")
+    def test_sleeping_drive_without_a_result_is_unavailable(self, _probe):
+        self.assertEqual(telemetry_agent.collect_drive_health([{"device": "/dev/sda"}]), {"/dev/sda": "unavailable"})
+
+    @patch.object(telemetry_agent, "drive_health", return_value="healthy")
+    def test_new_drive_is_probed_while_others_use_the_cache(self, probe):
+        with patch.object(telemetry_agent.time, "monotonic", return_value=1000.0):
+            telemetry_agent.collect_drive_health([{"device": "/dev/sda"}])
+            telemetry_agent.collect_drive_health([{"device": "/dev/sda"}, {"device": "/dev/sdb"}])
+        self.assertEqual([call.args[0] for call in probe.call_args_list], ["/dev/sda", "/dev/sdb"])
+
 
 class ConcurrentHealthTests(unittest.TestCase):
+    def setUp(self):
+        telemetry_agent._HEALTH_CACHE = {}
+
     def _run_probe(self, command, **_kwargs):
         """Dispatch on a per-device plan: (sleep, "ok" | "stall" | "empty")."""
         device = command[-1]
@@ -204,6 +256,23 @@ class ProcParsingTests(unittest.TestCase):
     @patch.object(telemetry_agent, "read", return_value="")
     def test_cpu_sample_empty_stat_returns_zero(self, _read):
         self.assertEqual(telemetry_agent.cpu_sample(), (0, 0))
+
+    @patch.object(telemetry_agent.time, "sleep")
+    @patch.object(telemetry_agent, "cpu_sample", return_value=(2000, 1250))
+    def test_cpu_usage_uses_the_previous_collection_without_sleeping(self, _sample, sleep):
+        telemetry_agent._PREV_CPU_SAMPLE = (time.monotonic() - 10, 1000, 1000)
+        self.assertEqual(telemetry_agent.cpu_usage(), 75)
+        sleep.assert_not_called()
+
+    @patch.object(telemetry_agent.time, "sleep")
+    @patch.object(telemetry_agent, "cpu_sample")
+    def test_cpu_usage_takes_a_live_sample_after_a_long_gap(self, _sample, sleep):
+        for previous in (None, (time.monotonic() - 120, 0, 0)):
+            with self.subTest(previous=previous):
+                _sample.side_effect = [(1000, 900), (1100, 950)]
+                telemetry_agent._PREV_CPU_SAMPLE = previous
+                self.assertEqual(telemetry_agent.cpu_usage(), 50)
+        self.assertEqual(sleep.call_count, 2)
 
     @patch.object(telemetry_agent, "read", return_value="invalid line without colon\nMemTotal: 1024 kB\nMemAvailable: 512 kB")
     def test_memory_ignores_lines_without_colon(self, _read):

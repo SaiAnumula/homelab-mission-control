@@ -18,7 +18,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 MAX_HEALTH_WORKERS = 8
+# SMART health changes slowly, and probing it every round keeps disks from sleeping.
+SMART_INTERVAL_SECONDS = float(os.environ.get("MISSION_CONTROL_SMART_INTERVAL", "600"))
+SMART_STANDBY_EXIT = 3  # smartctl exit status for a drive it skipped because it was asleep
 _PREV_IO_SAMPLE = None  # (timestamp, rx_bytes, tx_bytes, read_bytes, write_bytes)
+_PREV_CPU_SAMPLE = None  # (timestamp, total_jiffies, idle_jiffies)
+_HEALTH_CACHE = {}  # device path -> (checked_at, status)
 
 
 def read(path, default=""):
@@ -43,11 +48,24 @@ def cpu_sample():
 
 
 def cpu_usage():
-    total_a, idle_a = cpu_sample()
-    time.sleep(0.12)
-    total_b, idle_b = cpu_sample()
-    elapsed = total_b - total_a
-    return round(100 * (1 - ((idle_b - idle_a) / elapsed))) if elapsed else 0
+    """Return average CPU use since the previous collection.
+
+    Rounds are at least 10 s apart, so the delta covers the whole interval
+    without blocking. The first round, or one after a long gap, falls back to
+    a 120 ms live sample.
+    """
+    global _PREV_CPU_SAMPLE
+    now = time.monotonic()
+    total, idle = cpu_sample()
+    previous = _PREV_CPU_SAMPLE
+    if previous is None or not 0.5 <= now - previous[0] <= 60:
+        previous = (now, total, idle)
+        time.sleep(0.12)
+        now = time.monotonic()
+        total, idle = cpu_sample()
+    _PREV_CPU_SAMPLE = (now, total, idle)
+    elapsed = total - previous[1]
+    return round(100 * (1 - ((idle - previous[2]) / elapsed))) if elapsed > 0 else 0
 
 
 def memory():
@@ -194,14 +212,15 @@ def drive_health(path):
     """Return a conservative SMART status without ever requiring elevated access.
 
     Health is best-effort: ``unavailable`` means the SMART result could not be
-    read (not that the drive is failing). Genuine transport failures propagate
-    to the caller so a concurrent collector can count them without killing the
-    rest of the payload.
+    read (not that the drive is failing). ``standby`` means smartctl skipped a
+    sleeping drive instead of spinning it up. Genuine transport failures
+    propagate to the caller so a concurrent collector can count them without
+    killing the rest of the payload.
     """
     smartctl = shutil.which("smartctl")
     if not smartctl:
         return "unavailable"
-    command = [smartctl, "-H", "-j", path]
+    command = [smartctl, "-n", f"standby,{SMART_STANDBY_EXIT}", "-H", "-j", path]
     if os.environ.get("MISSION_CONTROL_SMARTCTL_SUDO", "").lower() in ("1", "true", "yes"):
         command = ["sudo", "-n", *command]
     try:
@@ -211,6 +230,8 @@ def drive_health(path):
         raise RuntimeError(f"SMART health check timed out for {path}") from error
     except json.JSONDecodeError as error:
         raise RuntimeError(f"SMART health check returned invalid data for {path}") from error
+    if result.returncode == SMART_STANDBY_EXIT:
+        return "standby"
     if result.returncode & 7 or not isinstance(payload, dict):
         return "unavailable"
     passed = payload.get("smart_status", {}).get("passed")
@@ -225,7 +246,7 @@ def drive_health(path):
 
 
 def collect_drive_health(devices):
-    """Measure every physical disk concurrently.
+    """Return each disk's SMART health, probing only disks whose result is due.
 
     Health is the slow part of ``storage_details()``: each probe can burn its
     full four-second timeout, and a stalled disk in a large RAID used to
@@ -234,19 +255,31 @@ def collect_drive_health(devices):
     dashboard aggregator so probe time stays bounded by the slowest disk, not
     the sum of all disks, and one bad probe is reported as ``unavailable``
     instead of tearing down the payload for every other drive.
+
+    Each result is reused for ``SMART_INTERVAL_SECONDS``. A drive that is
+    asleep keeps its last known result until a later probe finds it awake.
     """
+    global _HEALTH_CACHE
     if not devices:
         return {}
     paths = [device.get("device", "") for device in devices]
-    with ThreadPoolExecutor(max_workers=min(len(devices), MAX_HEALTH_WORKERS)) as pool:
-        futures = [pool.submit(drive_health, path) for path in paths]
-        results = []
-        for index, future in enumerate(futures):
-            try:
-                results.append(future.result())
-            except Exception:
-                results.append("unavailable")
-    return dict(zip(paths, results))
+    now = time.monotonic()
+    cache = {path: _HEALTH_CACHE[path] for path in paths if path in _HEALTH_CACHE}
+    due = [path for path in dict.fromkeys(paths)
+           if path not in cache or now - cache[path][0] >= SMART_INTERVAL_SECONDS]
+    if due:
+        with ThreadPoolExecutor(max_workers=min(len(due), MAX_HEALTH_WORKERS)) as pool:
+            futures = [pool.submit(drive_health, path) for path in due]
+            for path, future in zip(due, futures):
+                try:
+                    status = future.result()
+                except Exception:
+                    status = "unavailable"
+                if status == "standby":
+                    status = cache[path][1] if path in cache else "unavailable"
+                cache[path] = (now, status)
+    _HEALTH_CACHE = cache
+    return {path: cache[path][1] for path in paths}
 
 
 def _walk_devices(devices):

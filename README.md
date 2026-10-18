@@ -269,7 +269,9 @@ Drive sizes use decimal units, so a 2 TB drive shows as 2 TB. Memory capacity is
 
 Drive inventory, capacity, and usage work without SMART. If `smartctl` is installed and the agent user can read the drives, each drive shows its overall SMART result. Otherwise it shows `SMART N/A`.
 
-The agent runs at most eight SMART probes at once, each with a 4-second timeout. With many or slow drives, the first collection can still exceed the dashboard's timeout. Later requests use the cached result. A drive shows warning or failing only when the drive itself reports it. A result the agent can't read shows `SMART N/A`.
+The agent checks each drive's SMART health once every 10 minutes and reuses that result in between. A drive that starts failing can take up to 10 minutes to show it. To change the interval, set `MISSION_CONTROL_SMART_INTERVAL` in the agent unit, in seconds. The agent runs `smartctl` with `-n standby`, so it never spins up a sleeping drive. A sleeping drive keeps its last result, or shows `SMART N/A` if it was asleep since the agent started.
+
+The agent runs at most eight SMART probes at once, each with a 4-second timeout. With many or slow drives, a collection that probes every drive can still exceed the dashboard's timeout. Later requests use the cached result. A drive shows warning or failing only when the drive itself reports it. A result the agent can't read shows `SMART N/A`.
 
 Install smartmontools with the host's package manager:
 
@@ -284,7 +286,7 @@ sudo pacman -S smartmontools
 Then check access as the user that runs the agent:
 
 ```bash
-smartctl -H -j /dev/sda
+smartctl -n standby -H -j /dev/sda
 ```
 
 Some systems allow drive diagnostics only for root, even with `smartctl` installed. Don't give the agent unrestricted sudo just for SMART data. If you need health reporting, use narrow device permissions or a sudo rule an administrator has reviewed. Mission Control treats missing health data as normal.
@@ -298,10 +300,10 @@ Environment=MISSION_CONTROL_SMARTCTL_SUDO=1
 This setting grants nothing by itself. An administrator must also allow the exact read-only command for each monitored drive. For example, `/etc/sudoers.d/mission-control-smart` could contain:
 
 ```sudoers
-mission-control-user ALL=(root) NOPASSWD: /usr/sbin/smartctl -H -j /dev/sda, /usr/sbin/smartctl -H -j /dev/sdb
+mission-control-user ALL=(root) NOPASSWD: /usr/sbin/smartctl -n standby\,3 -H -j /dev/sda, /usr/sbin/smartctl -n standby\,3 -H -j /dev/sdb
 ```
 
-Change the username and device paths for the host, and validate the file with `visudo`. Don't use wildcards, and don't grant general `smartctl`, shell, or sudo access.
+Sudo compares the arguments exactly, and the comma must be escaped as `\,`. A rule written for an older agent that ran `smartctl -H -j` no longer matches, and those drives show `SMART N/A` until you update it. Change the username and device paths for the host, and validate the file with `visudo`. Don't use wildcards, and don't grant general `smartctl`, shell, or sudo access.
 
 ## Tailscale usage
 
