@@ -64,6 +64,24 @@ test('reachable agents with unavailable metrics stay stale rather than down', as
   assert.match(h.snapshot().error, /responds to health/)
 })
 
+test('persistently failing metrics retry fast, then settle at fifteen seconds', async () => {
+  const h = harness()
+  h.fail(); await h.check(0); h.healthOnly()
+  for (let second = 1; second <= 10; second++) await h.check(second * 1000)
+  assert.equal(h.healthCalls(), 10)
+  await h.check(24999); assert.equal(h.healthCalls(), 10)
+  await h.check(25000); assert.equal(h.healthCalls(), 11)
+  assert.equal(h.snapshot().status, 'stale')
+})
+
+test('the next check is timed from completion so collector caches stay expired', async () => {
+  let clock = 0, calls = 0
+  const monitor = createDeviceMonitor({ collect: async () => { calls++; clock += 3000; return { online: true } }, health: async () => null, now: () => clock })
+  monitor.get([device]); await monitor.runDue()
+  clock = 12999; await monitor.runDue(); assert.equal(calls, 1)
+  clock = 13000; await monitor.runDue(); assert.equal(calls, 2)
+})
+
 test('worker cap applies across configuration replacement and in-flight checks', async () => {
   let calls = 0
   const releases = []

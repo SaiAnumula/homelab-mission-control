@@ -1,9 +1,11 @@
+// Allows for one missed 10s collection plus browser and server poll offsets.
+const FRESHNESS_MS = 35000
 export function deviceStatus(device, stale = false, now = Date.now()) {
   const checked = Date.parse(device.checkedAt)
   const collected = device.collectedAt ? Date.parse(device.collectedAt) : checked
   if (stale || device.status === 'stale') return 'stale'
   if (device.status === 'down') return 'down'
-  if (!Number.isFinite(checked) || !Number.isFinite(collected) || now - Math.min(checked, collected) > 25000) return 'stale'
+  if (!Number.isFinite(checked) || !Number.isFinite(collected) || now - Math.min(checked, collected) > FRESHNESS_MS) return 'stale'
   if (!device.online) return 'down'
   if (device.status === 'degraded' || device.drives?.some(item => ['warning', 'failing'].includes(item.health)) || device.containers?.some(item => item.state !== 'running' || ['unhealthy', 'starting'].includes(item.health)) || device.services?.some(item => item.state !== 'active')) return 'degraded'
   return 'up'
@@ -19,8 +21,11 @@ export function validateTelemetry(data) {
   }
   return data
 }
-export function createPoller({ fetcher = fetch, onData, onError, onLoading, interval = 10000, timeout = 6000, schedule = setTimeout, cancel = clearTimeout }) {
-  let pending, controller, next, deadline, stopped = false
+const hasProblem = device => ['stale', 'down'].includes(device.status) || !device.online
+export function createPoller({ fetcher = fetch, onData, onError, onLoading, onSchedule, interval = 10000, fastInterval = 1000, fastWindow = 15000, timeout = 6000, schedule = setTimeout, cancel = clearTimeout, now = Date.now }) {
+  let pending, controller, next, deadline, errorSince, stopped = false
+  // When each problem was first seen: new problems poll fast, lasting ones fall back to the normal interval.
+  let problemSince = new Map()
   const refresh = () => {
     if (stopped) return Promise.resolve()
     if (pending) return pending
@@ -36,15 +41,20 @@ export function createPoller({ fetcher = fetch, onData, onError, onLoading, inte
         const response = await fetcher('/api/devices', { signal: controller.signal })
         if (!response.ok) throw new Error('Telemetry service unavailable')
         const data = validateTelemetry(await response.json())
-        if (data.devices.some(device => ['stale', 'down'].includes(device.status) || !device.online)) delay = 1000
+        const at = now()
+        problemSince = new Map(data.devices.filter(hasProblem).map(device => [device.id, problemSince.get(device.id) ?? at]))
+        errorSince = undefined
+        // Down devices are only rechecked slowly by the server, so they never need fast polling.
+        if (data.devices.some(device => hasProblem(device) && device.status !== 'down' && at - problemSince.get(device.id) < fastWindow)) delay = fastInterval
         if (!stopped) onData(data)
       } catch (error) {
-        delay = 1000
+        errorSince ??= now()
+        if (now() - errorSince < fastWindow) delay = fastInterval
         if (!stopped) onError(error.name === 'AbortError' ? 'Telemetry request timed out; displayed data is stale' : error.message)
       } finally {
         cancel(deadline)
         pending = undefined
-        if (!stopped) { onLoading(false); next = schedule(refresh, delay) }
+        if (!stopped) { onLoading(false); onSchedule?.(delay); next = schedule(refresh, delay) }
       }
     })()
     return pending

@@ -136,12 +136,14 @@ function App() {
   const [data, setData] = useState(/** @type {{ devices: Array<{id: string, online: boolean, checkedAt?: string}>, updatedAt?: string }} */ ({ devices: [] }))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [pollDelay, setPollDelay] = useState(10000)
   const poller = useRef(/** @type {ReturnType<typeof createPoller> | null} */ (null))
   useEffect(() => {
     const active = createPoller({
       onData: next => { setData(next); setError('') },
       onError: setError,
       onLoading: setLoading,
+      onSchedule: setPollDelay,
     })
     poller.current = active
     active.refresh()
@@ -174,7 +176,7 @@ function App() {
       {!loading && !error && !data.devices.length && <div className="loading">No devices configured. Add nodes to your local configuration.</div>}
       {data.devices.map((device, i) => <DeviceCard device={device} index={i} stale={stale} key={device.id}/>) }
     </section>}
-    <footer><span><ShieldCheck size={14}/> SECURE LOCAL TELEMETRY</span><span>{error || data.devices.some(d => ['stale', 'down'].includes(deviceStatus(d))) ? 'RECOVERY VIEW · 1S' : 'TELEMETRY · 10S'}</span><span><Database size={14}/> {data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : 'WAITING'}</span></footer>
+    <footer><span><ShieldCheck size={14}/> SECURE LOCAL TELEMETRY</span><span>{error || data.devices.some(d => ['stale', 'down'].includes(deviceStatus(d))) ? 'RECOVERY VIEW' : 'TELEMETRY'} · {pollDelay / 1000}S</span><span><Database size={14}/> {data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : 'WAITING'}</span></footer>
   </main>
 }
 
