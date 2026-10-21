@@ -47,6 +47,12 @@
   --purple: light-dark(#6d28d9, #bb9af7);
   --blue: light-dark(#1d4ed8, #7aa2f7);
 
+  /* Fills for bars and status squares. Text needs the darker accents above. */
+  --green-fill: light-dark(#22c55e, #9ece6a);
+  --cyan-fill: light-dark(#0ea5e9, #7dcfff);
+  --amber-fill: light-dark(#f59e0b, #e0af68);
+  --red-fill: light-dark(#ef4444, #f7768e);
+
   /* Mark Logo Tile */
   --mark-text: light-dark(#ffffff, #080b10);
 
@@ -178,7 +184,7 @@ h1:after {
   display: inline-block;
   width: 6px;
   height: 6px;
-  background: var(--green);
+  background: var(--green-fill);
   box-shadow: 0 0 8px var(--glow-green);
 }
 
@@ -257,6 +263,7 @@ button:disabled {
 
 .device-card {
   --accent: var(--green);
+  --accent-fill: var(--green-fill);
   position: relative;
   background: var(--surface);
   border: 1px solid var(--border-card);
@@ -280,15 +287,17 @@ button:disabled {
   top: -1px;
   height: 2px;
   width: 90px;
-  background: var(--accent);
+  background: var(--accent-fill);
 }
 
 .accent-cyan {
   --accent: var(--cyan);
+  --accent-fill: var(--cyan-fill);
 }
 
 .accent-amber {
   --accent: var(--amber);
+  --accent-fill: var(--amber-fill);
 }
 
 @keyframes rise {
@@ -625,18 +634,18 @@ button:disabled {
 .track i {
   display: block;
   height: 100%;
-  background: var(--accent);
+  background: var(--accent-fill);
   --track-glow: light-dark(transparent, var(--accent));
   box-shadow: 0 0 7px var(--track-glow);
   transition: width .6s ease;
 }
 
 .track i.warn {
-  background: var(--amber);
+  background: var(--amber-fill);
 }
 
 .track i.danger {
-  background: var(--red);
+  background: var(--red-fill);
 }
 
 .containers {
@@ -688,21 +697,21 @@ button:disabled {
 .pulse {
   width: 6px;
   height: 6px;
-  background: var(--green);
+  background: var(--green-fill);
   box-shadow: 0 0 7px var(--glow-green);
 }
 
 .pulse.stopped {
-  background: var(--red);
+  background: var(--red-fill);
 }
 
 .pulse.unhealthy {
-  background: var(--red);
+  background: var(--red-fill);
   box-shadow: 0 0 7px var(--glow-red);
 }
 
 .pulse.starting {
-  background: var(--amber);
+  background: var(--amber-fill);
   box-shadow: 0 0 7px var(--glow-amber);
 }
 
