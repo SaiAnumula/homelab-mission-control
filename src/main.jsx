@@ -157,8 +157,8 @@ function useTheme() {
     const onStorage = (/** @type {StorageEvent} */ event) => {
       if (event.key === null || event.key === STORAGE_KEY) setMode(readPreference(getStorage()))
     }
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
+    globalThis.addEventListener('storage', onStorage)
+    return () => globalThis.removeEventListener('storage', onStorage)
   }, [])
 
   const cycle = () => {
