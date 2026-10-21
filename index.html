@@ -3,8 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#07100e" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f8fb" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#07100e" />
     <title>Mission Control</title>
+    <script>
+      try {
+        var theme = localStorage.getItem('mc-theme')
+        if (theme === 'light' || theme === 'dark') {
+          document.documentElement.setAttribute('data-theme', theme)
+        }
+      } catch (_) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

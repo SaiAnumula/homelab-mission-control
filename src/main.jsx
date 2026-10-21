@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Activity, Box, ChevronDown, Cpu, Database, Gamepad2, Gauge, HardDrive, Laptop, Layers, MemoryStick, RefreshCw, Server, ShieldCheck, Thermometer, Wifi, WifiOff } from 'lucide-react'
+import { Activity, Box, ChevronDown, Cpu, Database, Gamepad2, Gauge, HardDrive, Laptop, Layers, MemoryStick, Monitor, Moon, RefreshCw, Server, ShieldCheck, Sun, Thermometer, Wifi, WifiOff } from 'lucide-react'
 import './styles.css'
 import { createPoller, deviceStatus } from './polling.js'
+import { STORAGE_KEY, applyTheme, describe, nextMode, readPreference, savePreference } from './theme.js'
 
 const icons = { pc: Cpu, server: Server, laptop: Laptop }
 
@@ -132,7 +133,59 @@ function DeviceCard({ device, index, stale }) {
   </article>
 }
 
+function getStorage() {
+  try {
+    return globalThis.localStorage
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Hook for managing theme state.
+ *
+ * @returns {[import('./theme.js').ThemeMode, () => void]}
+ */
+function useTheme() {
+  const [mode, setMode] = useState(() => readPreference(getStorage()))
+
+  useEffect(() => {
+    applyTheme(document, mode)
+  }, [mode])
+
+  useEffect(() => {
+    const onStorage = (/** @type {StorageEvent} */ event) => {
+      if (event.key === null || event.key === STORAGE_KEY) setMode(readPreference(getStorage()))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  const cycle = () => {
+    const next = nextMode(mode)
+    savePreference(getStorage(), next)
+    setMode(next)
+  }
+
+  return [mode, cycle]
+}
+
+function ThemeToggle({ mode, onCycle }) {
+  const Icon = mode === 'light' ? Sun : mode === 'dark' ? Moon : Monitor
+  const label = describe(mode)
+  return <button
+    type="button"
+    className="theme-toggle"
+    onClick={onCycle}
+    aria-label={label}
+    title={label}
+  >
+    <Icon size={18} />
+  </button>
+}
+
 function App() {
+  const [themeMode, cycleTheme] = useTheme()
   const [data, setData] = useState(/** @type {{ devices: Array<{id: string, online: boolean, checkedAt?: string}>, updatedAt?: string }} */ ({ devices: [] }))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -177,6 +230,7 @@ function App() {
       {data.devices.map((device, i) => <DeviceCard device={device} index={i} stale={stale} key={device.id}/>) }
     </section>}
     <footer><span><ShieldCheck size={14}/> SECURE LOCAL TELEMETRY</span><span>{error || data.devices.some(d => ['stale', 'down'].includes(deviceStatus(d))) ? 'RECOVERY VIEW' : 'TELEMETRY'} · {pollDelay / 1000}S</span><span><Database size={14}/> {data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : 'WAITING'}</span></footer>
+    <ThemeToggle mode={themeMode} onCycle={cycleTheme} />
   </main>
 }
 
