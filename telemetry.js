@@ -61,16 +61,24 @@ export async function collectDevices(devices, collect, now = () => new Date().to
   }))
 }
 
+const HEALTHY_CHECK_MS = 10000
+// Failing devices retry quickly at first, then settle at a fixed slower rate.
+const FAST_RETRY_MS = 1000
+const FAST_RETRY_WINDOW_MS = 10000
+const SLOW_RETRY_MS = 15000
+const DOWN_AFTER_MS = 10000
+
 export function createDeviceMonitor({ collect, health, now = () => performance.now(), stamp = () => new Date().toISOString(), maxWorkers = 8, schedule = setInterval, cancel = clearInterval }) {
-  /** @typedef {{device: any, index: number, lastGood: ReturnType<typeof publicDevice> | null, failedSince: number | null, recovering: boolean, pending: boolean, due: number, checkedAt?: string, error?: string}} Entry */
+  /** @typedef {{device: any, index: number, lastGood: ReturnType<typeof publicDevice> | null, failedSince: number | null, recoveringSince: number | null, recovering: boolean, pending: boolean, due: number, checkedAt?: string, error?: string}} Entry */
   /** @type {Map<string, Entry>} */
   let entries = new Map()
   let active = 0, timer
   /** @param {Entry} entry */
-  const isDown = entry => entry.failedSince !== null && now() - entry.failedSince >= 10000
+  const isDown = entry => entry.failedSince !== null && now() - entry.failedSince >= DOWN_AFTER_MS
+  /** @param {Entry} entry */
+  const nextDelay = entry => !entry.recovering ? HEALTHY_CHECK_MS : now() - (entry.recoveringSince ?? now()) < FAST_RETRY_WINDOW_MS ? FAST_RETRY_MS : SLOW_RETRY_MS
   /** @param {Entry} entry */
   const collectEntry = async entry => {
-    const started = now()
     let reachable = false, result, retryCollection = !entry.recovering
     try {
       if (entry.recovering) {
@@ -85,15 +93,17 @@ export function createDeviceMonitor({ collect, health, now = () => performance.n
     if (result?.online) {
       entry.lastGood = result
       entry.recovering = false
+      entry.recoveringSince = null
       entry.failedSince = null
       entry.error = undefined
     } else {
       entry.recovering = true
+      entry.recoveringSince ??= now()
       entry.error = reachable ? 'Telemetry delayed; device responds to health checks' : 'Telemetry unavailable; checking connection'
       if (!reachable && entry.failedSince === null) entry.failedSince = now()
     }
-    const interval = isDown(entry) ? 15000 : entry.recovering ? 1000 : 10000
-    entry.due = Math.max(started + interval, now())
+    // Timing from completion keeps checks behind collector caches of the same TTL.
+    entry.due = now() + nextDelay(entry)
   }
   /** @param {Entry} entry */
   const check = async entry => {
@@ -101,9 +111,10 @@ export function createDeviceMonitor({ collect, health, now = () => performance.n
       await collectEntry(entry)
     } catch {
       entry.recovering = true
+      entry.recoveringSince ??= now()
       entry.error = 'Telemetry check failed'
       entry.failedSince ??= now()
-      entry.due = now() + 1000
+      entry.due = now() + nextDelay(entry)
     } finally {
       entry.pending = false
       active--
@@ -124,7 +135,7 @@ export function createDeviceMonitor({ collect, health, now = () => performance.n
       const next = new Map()
       for (const [index, device] of devices.entries()) {
         let entry = entries.get(device.id)
-        if (!entry || entry.device.endpoint !== device.endpoint) entry = { device: { ...device }, index, lastGood: null, failedSince: null, recovering: false, pending: false, due: 0, checkedAt: undefined, error: 'Waiting for first telemetry check' }
+        if (!entry || entry.device.endpoint !== device.endpoint) entry = { device: { ...device }, index, lastGood: null, failedSince: null, recoveringSince: null, recovering: false, pending: false, due: 0, checkedAt: undefined, error: 'Waiting for first telemetry check' }
         entry.device = { ...device }
         entry.index = index
         next.set(device.id, entry)

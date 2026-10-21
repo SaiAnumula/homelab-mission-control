@@ -39,7 +39,8 @@ test('status distinguishes down, degraded, stale and fresh up', () => {
   const fixture = { online: true, checkedAt: new Date(100000).toISOString() }
   assert.equal(deviceStatus(fixture, false, 100001), 'up')
   assert.equal(deviceStatus(fixture, true, 100001), 'stale')
-  assert.equal(deviceStatus(fixture, false, 125001), 'stale')
+  assert.equal(deviceStatus(fixture, false, 135000), 'up')
+  assert.equal(deviceStatus(fixture, false, 135001), 'stale')
   assert.equal(deviceStatus({ ...fixture, online: false }, false, 100001), 'down')
   assert.equal(deviceStatus({ ...fixture, containers: [{ state: 'running', health: 'unhealthy' }] }, false, 100001), 'degraded')
   assert.equal(deviceStatus({ ...fixture, collectedAt: new Date(1).toISOString() }, false, 100001), 'stale')
@@ -58,10 +59,48 @@ test('recovery snapshots poll quickly and explicit down survives old collection 
   for (const status of ['stale', 'down']) {
     const h = harness(async () => ({ ok: true, json: async () => ({ devices: [{ ...data.devices[0], status }] }) }))
     await h.poller.refresh()
-    assert.equal([...h.timers.values()][0].delay, 1000)
+    assert.equal([...h.timers.values()][0].delay, status === 'stale' ? 1000 : 10000)
     h.poller.stop()
     const device = { online: false, status, checkedAt: new Date(100000).toISOString(), collectedAt: new Date(0).toISOString() }
     assert.equal(deviceStatus(device, false, 100001), status)
     assert.equal(deviceStatus(device, true, 100001), 'stale')
   }
+})
+
+function clockedHarness(respond) {
+  let clock = 0
+  const timers = new Map(), delays = []; let id = 0
+  const poller = createPoller({ fetcher: async () => respond(), onData() {}, onError() {}, onLoading() {}, onSchedule: delay => delays.push(delay), now: () => clock, schedule: (fn, delay) => { timers.set(++id, { fn, delay }); return id }, cancel: key => timers.delete(key) })
+  return { poller, delays, poll: async at => { clock = at; await poller.refresh() } }
+}
+
+test('new problems poll fast, then fall back to the normal interval', async () => {
+  let devices = [{ ...data.devices[0], status: 'stale', online: false }]
+  const h = clockedHarness(() => ({ ok: true, json: async () => ({ devices }) }))
+  await h.poll(0); await h.poll(14999); await h.poll(15000)
+  devices = [{ ...data.devices[0], status: 'down', online: false }]; await h.poll(16000)
+  devices = [{ ...data.devices[0], status: 'stale', online: false }]; await h.poll(30000)
+  devices = data.devices; await h.poll(40000)
+  devices = [{ ...data.devices[0], status: 'stale', online: false }]; await h.poll(50000)
+  assert.deepEqual(h.delays, [1000, 1000, 10000, 10000, 10000, 10000, 1000])
+  h.poller.stop()
+})
+
+test('a newly failing device polls fast even while another stays down', async () => {
+  let devices = [{ id: 'a', name: 'A', online: false, status: 'down' }]
+  const h = clockedHarness(() => ({ ok: true, json: async () => ({ devices }) }))
+  await h.poll(0)
+  devices = [...devices, { id: 'b', name: 'B', online: false, status: 'stale' }]; await h.poll(10000)
+  assert.deepEqual(h.delays, [10000, 1000])
+  h.poller.stop()
+})
+
+test('request failures poll fast, then fall back to the normal interval', async () => {
+  let ok = false
+  const h = clockedHarness(() => ok ? { ok: true, json: async () => data } : { ok: false })
+  await h.poll(0); await h.poll(14999); await h.poll(15000)
+  ok = true; await h.poll(20000)
+  ok = false; await h.poll(30000)
+  assert.deepEqual(h.delays, [1000, 1000, 10000, 10000, 1000])
+  h.poller.stop()
 })

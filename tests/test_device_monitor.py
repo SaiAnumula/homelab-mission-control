@@ -121,6 +121,30 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(self.snapshot()["status"], "stale")
         self.assertIn("responds to health", self.snapshot()["error"])
 
+    def test_persistently_failing_metrics_retry_fast_then_every_fifteen_seconds(self):
+        self.fetch.return_value = {"online": False}
+        self.check(0)
+        self.health.return_value = True
+        for second in range(1, 11):
+            self.check(second)
+        self.assertEqual(self.health.call_count, 10)
+        self.check(24.999)
+        self.assertEqual(self.health.call_count, 10)
+        self.check(25)
+        self.assertEqual(self.health.call_count, 11)
+        self.assertEqual(self.snapshot()["status"], "stale")
+
+    def test_next_check_is_timed_from_completion(self):
+        def slow_fetch(_device):
+            self.clock += 3
+            return {"online": True, "status": "up"}
+        self.fetch.side_effect = slow_fetch
+        self.check(0)
+        self.check(12.999)
+        self.assertEqual(self.fetch.call_count, 1)
+        self.check(13)
+        self.assertEqual(self.fetch.call_count, 2)
+
     def test_down_does_not_clear_last_readings(self):
         self.check(0)
         self.fetch.return_value = {"online": False}

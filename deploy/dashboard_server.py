@@ -21,9 +21,11 @@ MAX_FETCH_WORKERS = 8
 
 
 HEALTHY_CHECK_SECONDS = 10
-RECOVERY_SECONDS = 1
+# Failing devices retry quickly at first, then settle at a fixed slower rate.
+FAST_RETRY_SECONDS = 1
+FAST_RETRY_WINDOW_SECONDS = 10
+SLOW_RETRY_SECONDS = 15
 DOWN_AFTER_SECONDS = 10
-DOWN_CHECK_SECONDS = 15
 MAX_RESPONSE_BYTES = 1024 * 1024
 PUBLIC_DEVICE_FIELDS = ("id", "name", "label", "type", "accent")
 TELEMETRY_FIELDS = ("online", "os", "uptime", "specs", "usage", "drives", "containers", "services", "error", "collectedAt")
@@ -240,6 +242,14 @@ class DeviceMonitor:
         return (entry["failed_since"] is not None
                 and self._now() - entry["failed_since"] >= DOWN_AFTER_SECONDS)
 
+    def _next_delay(self, entry):
+        if not entry["recovering"]:
+            return HEALTHY_CHECK_SECONDS
+        since = entry["recovering_since"]
+        if since is None or self._now() - since < FAST_RETRY_WINDOW_SECONDS:
+            return FAST_RETRY_SECONDS
+        return SLOW_RETRY_SECONDS
+
     def _check(self, entry):
         try:
             self._collect(entry)
@@ -249,14 +259,15 @@ class DeviceMonitor:
                 entry["error"] = "Telemetry check failed"
                 if entry["failed_since"] is None:
                     entry["failed_since"] = self._now()
-                entry["due"] = self._now() + RECOVERY_SECONDS
+                if entry["recovering_since"] is None:
+                    entry["recovering_since"] = self._now()
+                entry["due"] = self._now() + self._next_delay(entry)
         finally:
             with self._lock:
                 entry["pending"] = False
                 self._active -= 1
 
     def _collect(self, entry):
-        started = self._now()
         reachable = False
         result = None
         try:
@@ -276,17 +287,19 @@ class DeviceMonitor:
             if result and result.get("online"):
                 entry["last_good"] = result
                 entry["recovering"] = False
+                entry["recovering_since"] = None
                 entry["failed_since"] = None
                 entry["error"] = None
             else:
                 entry["recovering"] = True
+                if entry["recovering_since"] is None:
+                    entry["recovering_since"] = self._now()
                 entry["error"] = ("Telemetry delayed; device responds to health checks" if reachable
                                   else "Telemetry unavailable; checking connection")
                 if not reachable and entry["failed_since"] is None:
                     entry["failed_since"] = self._now()
-            interval = (DOWN_CHECK_SECONDS if self._is_down(entry) else
-                        RECOVERY_SECONDS if entry["recovering"] else HEALTHY_CHECK_SECONDS)
-            entry["due"] = max(started + interval, self._now())
+            # Timing from completion keeps checks behind agent caches of the same TTL.
+            entry["due"] = self._now() + self._next_delay(entry)
 
     def get(self, devices):
         with self._lock:
@@ -295,7 +308,7 @@ class DeviceMonitor:
                 entry = self._entries.get(device["id"])
                 if entry is None or entry["device"].get("endpoint") != device.get("endpoint"):
                     entry = {"device": dict(device), "last_good": None, "failed_since": None,
-                             "recovering": False, "pending": False, "due": 0,
+                             "recovering_since": None, "recovering": False, "pending": False, "due": 0,
                              "checked_at": None, "error": "Waiting for first telemetry check"}
                 entry["device"] = dict(device)
                 entries[device["id"]] = entry
