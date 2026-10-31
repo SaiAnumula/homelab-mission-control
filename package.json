@@ -12,7 +12,8 @@
     "preview": "vite preview --host 0.0.0.0",
     "test:node": "node --test node-tests/*.test.js",
     "lint": "eslint . --max-warnings 0",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && npm run typecheck && npm run test:node && python3 -W error -m compileall -q agent deploy tests && python3 -W error -m unittest discover -s tests && npm run build"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

@@ -84,10 +84,11 @@ npm run build
 
 ## Tests and checks
 
-None of these commands contact a real machine.
+None of these commands contact a real machine. Run `npm run check` to run everything CI runs.
 
 ```bash
 npm ci
+npm run check                  # Everything CI runs
 npm test                       # Python unittest + mocked Node helper tests
 npm run lint                   # ESLint; warnings fail
 npm run typecheck              # TypeScript checks frontend JavaScript/JSX
