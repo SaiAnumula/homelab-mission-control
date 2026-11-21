@@ -349,6 +349,14 @@ def storage_details():
 
 
 def docker_containers():
+    """Return containers, or raise when an installed Docker cannot be read.
+
+    A host without Docker is a supported configuration and yields an empty
+    list. Docker that is installed but fails, times out or prints malformed
+    output raises ``RuntimeError`` with a fixed, sanitized message so the
+    stats payload can distinguish a broken collector from an empty host
+    instead of showing the same healthy green as a genuinely idle machine.
+    """
     if not shutil.which("docker"):
         return []
     try:
@@ -356,28 +364,35 @@ def docker_containers():
             ["docker", "ps", "-a", "--format", "{{json .}}"],
             capture_output=True, text=True, timeout=4,
         )
-        if result.returncode:
-            return []
-        containers = []
-        for line in result.stdout.splitlines():
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("Docker status check timed out") from error
+    except OSError as error:
+        raise RuntimeError("Docker status check failed to run") from error
+    if result.returncode:
+        raise RuntimeError("Docker status check failed")
+    containers = []
+    for line in result.stdout.splitlines():
+        try:
             item = json.loads(line)
-            status_str = item.get("Status", "")
-            health = None
-            if "(healthy)" in status_str:
-                health = "healthy"
-            elif "(unhealthy)" in status_str:
-                health = "unhealthy"
-            elif "(health: starting)" in status_str:
-                health = "starting"
-            containers.append({
-                "name": item.get("Names", "unknown"),
-                "state": item.get("State", "unknown").lower(),
-                "status": status_str,
-                "health": health,
-            })
-        return containers
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        return []
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Docker status check returned invalid data") from error
+        if not isinstance(item, dict):
+            raise RuntimeError("Docker status check returned invalid data")
+        status_str = item.get("Status", "")
+        health = None
+        if "(healthy)" in status_str:
+            health = "healthy"
+        elif "(unhealthy)" in status_str:
+            health = "unhealthy"
+        elif "(health: starting)" in status_str:
+            health = "starting"
+        containers.append({
+            "name": item.get("Names", "unknown"),
+            "state": item.get("State", "unknown").lower(),
+            "status": status_str,
+            "health": health,
+        })
+    return containers
 
 
 def system_temperature():
@@ -519,6 +534,16 @@ def stats():
     vram_label = f"{vram_used / 1073741824:.1f} / {vram_total / 1073741824:.0f} GB" if vram_total else None
     vram_pct = round(100 * vram_used / vram_total) if vram_total else None
     net_rx, net_tx, disk_r, disk_w = io_rates()
+    # A failing Docker collector must be visible, not read as zero containers.
+    containers = []
+    docker_status = "absent" if not shutil.which("docker") else "ok"
+    docker_error = None
+    if docker_status != "absent":
+        try:
+            containers = docker_containers()
+        except RuntimeError as error:
+            docker_status = "error"
+            docker_error = str(error)
     os_release = {}
     for line in read("/etc/os-release").splitlines():
         if "=" in line:
@@ -526,7 +551,7 @@ def stats():
             os_release[key] = value.strip('"')
     uptime_raw = read("/proc/uptime", "0").split()
     uptime = float(uptime_raw[0]) if uptime_raw else 0.0
-    return {
+    payload = {
         "online": True,
         "collectedAt": datetime.now(timezone.utc).isoformat(),
         "os": os_release.get("PRETTY_NAME") or platform.platform(),
@@ -552,9 +577,13 @@ def stats():
             "disk_write_rate": disk_w,
         },
         "drives": drives,
-        "containers": docker_containers(),
+        "containers": containers,
+        "docker_status": docker_status,
         "services": monitored_services(),
     }
+    if docker_error:
+        payload["error"] = docker_error
+    return payload
 
 
 class StatsCache:

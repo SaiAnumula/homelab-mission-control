@@ -30,7 +30,7 @@ SLOW_RETRY_SECONDS = 15
 DOWN_AFTER_SECONDS = 10
 MAX_RESPONSE_BYTES = 1024 * 1024
 PUBLIC_DEVICE_FIELDS = ("id", "name", "label", "type", "accent")
-TELEMETRY_FIELDS = ("online", "os", "uptime", "specs", "usage", "drives", "containers", "services", "error", "collectedAt")
+TELEMETRY_FIELDS = ("online", "os", "uptime", "specs", "usage", "drives", "containers", "services", "error", "docker_status", "collectedAt")
 
 
 class ConfigurationError(ValueError):
@@ -88,7 +88,7 @@ def validate_stats(stats):
         if key in stats and (not isinstance(stats[key], list)
                              or any(not isinstance(item, dict) for item in stats[key])):
             raise ValueError(f"Invalid telemetry: {key} must be an array of objects")
-    for key in ("os", "error", "collectedAt"):
+    for key in ("os", "error", "collectedAt", "docker_status"):
         if key in stats and not isinstance(stats[key], str):
             raise ValueError(f"Invalid telemetry: {key} must be a string")
     if "uptime" in stats and (isinstance(stats["uptime"], bool)
@@ -122,7 +122,7 @@ def validate_stats(stats):
 def telemetry_status(stats):
     if not stats.get("online"):
         return "down"
-    degraded = bool(stats.get("error")) or any(
+    degraded = bool(stats.get("error")) or stats.get("docker_status") == "error" or any(
         service.get("state") != "active" for service in stats.get("services", [])
     ) or any(
         container.get("state") != "running" or container.get("health") in ("unhealthy", "starting")

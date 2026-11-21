@@ -34,3 +34,18 @@ test('failed collections can retry without poisoning cache', async () => {
   const cached = createCachedCollector(async () => { if (!calls++) throw Error('fixture'); return 'recovered' })
   await assert.rejects(cached()); assert.equal(await cached(), 'recovered')
 })
+
+test('a failing docker collector degrades instead of reading as zero containers', () => {
+  const base = { online: true, usage: { cpu: 5 }, containers: [] }
+  for (const healthy of ['ok', 'absent']) {
+    const result = publicDevice(device, { ...base, docker_status: healthy })
+    assert.equal(result.status, 'up'); assert.equal(result.docker_status, healthy)
+  }
+  const failed = publicDevice(device, { ...base, docker_status: 'error', error: 'Docker status check failed' })
+  assert.equal(failed.status, 'degraded')
+  assert.equal(failed.docker_status, 'error')
+  assert.equal(failed.error, 'Docker status check failed')
+  assert.equal(publicDevice(device, { ...base, error: 'Docker status unavailable' }).status, 'degraded')
+  assert.equal(publicDevice(device, { ...base, error: null }).status, 'up')
+  for (const invalid of [{ ...base, docker_status: 5 }, { ...base, error: 5 }]) assert.throws(() => publicDevice(device, invalid))
+})

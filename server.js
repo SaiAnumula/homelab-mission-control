@@ -2,6 +2,7 @@ import { createDeviceMonitor, createCachedCollector, validateDevices } from './t
 import express from 'express'
 import si from 'systeminformation'
 import fs from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,15 +39,31 @@ async function linuxGpuUsage() {
   return null
 }
 
+async function dockerAvailable() {
+  // Optional Docker monitoring: an absent CLI is a supported configuration,
+  // so only an installed but unreadable daemon counts as a collector failure.
+  const name = process.platform === 'win32' ? 'docker.exe' : 'docker'
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue
+    try {
+      await fs.access(path.join(dir, name), fsConstants.X_OK)
+      return true
+    } catch { /* keep searching PATH */ }
+  }
+  return false
+}
+
 async function localStats() {
-  const [cpu, load, mem, disks, os, time, graphics, docker, temp, net, fsStats] = await Promise.all([
+  const [cpu, load, mem, disks, os, time, graphics, docker, dockerInstalled, temp, net, fsStats] = await Promise.all([
     si.cpu(), si.currentLoad(), si.mem(), si.fsSize(), si.osInfo(), Promise.resolve(si.time()),
     si.graphics().catch(() => ({ controllers: [] })),
-    si.dockerContainers(true).catch(() => []),
+    si.dockerContainers(true).catch(() => null),
+    dockerAvailable(),
     si.cpuTemperature().catch(() => ({ main: 0, max: 0 })),
     si.networkStats().catch(() => /** @type {import('systeminformation').Systeminformation.NetworkStatsData[]} */ ([])),
     si.fsStats().catch(() => ({ rx_sec: 0, wx_sec: 0 })),
   ])
+  const dockerStatus = !dockerInstalled ? 'absent' : docker === null ? 'error' : 'ok'
   const disk = disks.find((item) => item.mount === '/') || disks[0]
   const gpu = graphics.controllers?.[0]
   const gpuLoad = Number.isFinite(gpu?.utilizationGpu) ? Math.round(gpu?.utilizationGpu || 0) : await linuxGpuUsage()
@@ -93,13 +110,15 @@ async function localStats() {
       disk_write_rate: formatRate(fsStats?.wx_sec),
     },
     drives,
-    containers: docker.map((c) => {
+    containers: (docker ?? []).map((c) => {
       let health = null
       if (c.status?.includes('(healthy)')) health = 'healthy'
       else if (c.status?.includes('(unhealthy)')) health = 'unhealthy'
       else if (c.status?.includes('(health: starting)')) health = 'starting'
       return { name: c.name, state: c.state, status: c.status, health }
     }),
+    docker_status: dockerStatus,
+    ...(dockerStatus === 'error' ? { error: 'Docker status unavailable' } : {}),
     services: [],
   }
 }

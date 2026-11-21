@@ -26,7 +26,8 @@ export function validateDevices(devices) {
 export function publicDevice(device, stats, checkedAt) {
   if (!object(stats) || typeof stats.online !== 'boolean') throw new Error('Invalid telemetry payload')
   for (const key of ['specs', 'usage']) if (stats[key] !== undefined && !object(stats[key])) throw new Error('Invalid telemetry payload')
-  const result = fields(stats, ['online', 'status', 'demo', 'os', 'uptime', 'collectedAt'])
+  const result = fields(stats, ['online', 'status', 'demo', 'os', 'uptime', 'collectedAt', 'error', 'docker_status'])
+  for (const key of ['error', 'docker_status']) if (result[key] != null && typeof result[key] !== 'string') throw new Error('Invalid telemetry payload')
   if (result.uptime != null && (!Number.isFinite(result.uptime) || result.uptime < 0)) throw new Error('Invalid telemetry uptime')
   result.specs = fields(stats.specs, ['cpu', 'cores', 'memory', 'disk', 'gpu', 'vram'])
   result.usage = fields(stats.usage, ['cpu', 'memory', 'disk', 'gpu', 'gpu_vram', 'temperature', 'net_rx_rate', 'net_tx_rate', 'disk_read_rate', 'disk_write_rate'])
@@ -42,7 +43,8 @@ export function publicDevice(device, stats, checkedAt) {
     })
   }
   // Trusted configuration wins; endpoint and credentials never reach the client.
-  const degraded = result.drives.some(item => ['warning', 'failing'].includes(item.health)) || result.containers.some(item => item.state !== 'running' || ['unhealthy', 'starting'].includes(item.health)) || result.services.some(item => item.state !== 'active')
+  // A failing Docker collector must be visible, not read as zero containers.
+  const degraded = result.error != null || result.docker_status === 'error' || result.drives.some(item => ['warning', 'failing'].includes(item.health)) || result.containers.some(item => item.state !== 'running' || ['unhealthy', 'starting'].includes(item.health)) || result.services.some(item => item.state !== 'active')
   return { ...result, ...fields(device, ['id', 'name', 'label', 'type', 'accent']), online: stats.online, status: !result.online ? 'down' : degraded ? 'degraded' : 'up', checkedAt }
 }
 export function createCachedCollector(collect, { ttl = 10000, now = Date.now } = {}) {

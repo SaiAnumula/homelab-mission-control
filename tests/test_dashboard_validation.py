@@ -98,6 +98,21 @@ class TelemetryValidationTests(unittest.TestCase):
                 self.assertEqual(self.fetch({"online": True, **extra})["status"], "degraded")
         self.assertEqual(self.fetch({"online": False})["status"], "down")
 
+    def test_docker_collector_failure_degrades_an_otherwise_healthy_device(self):
+        for extra in ({"docker_status": "error"},
+                      {"docker_status": "error", "error": "Docker status check failed"},
+                      {"error": "Docker status unavailable"}):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.fetch({"online": True, **extra})["status"], "degraded")
+
+    def test_docker_status_flows_through_and_healthy_values_stay_up(self):
+        for status in ("ok", "absent"):
+            with self.subTest(status=status):
+                result = self.fetch({"online": True, "docker_status": status, "containers": []})
+                self.assertEqual(result["status"], "up")
+                self.assertEqual(result["docker_status"], status)
+        self.assertEqual(self.fetch({"online": True, "docker_status": 5})["status"], "down")
+
     def test_json_response_has_error_status_and_no_store(self):
         handler = object.__new__(dashboard.Handler)
         handler.send_response = Mock()

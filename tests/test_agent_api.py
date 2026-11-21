@@ -36,6 +36,51 @@ class StatsCompositionTests(unittest.TestCase):
         self.assertEqual(data["usage"]["gpu_vram"], 25)
         self.assertIn("collectedAt", data)
 
+    def test_stats_surfaces_a_failing_docker_collector(self):
+        fixtures = {
+            "memory": (16 * 2**30, 30), "storage_details": [],
+            "cpu_details": ("Fixture CPU", "4C / 8T"), "gpu_details": ("Fixture GPU", 20),
+            "gpu_vram": (2 * 2**30, 8 * 2**30), "io_rates": ("1 MB/s", "2 MB/s", "3 MB/s", "4 MB/s"),
+            "cpu_usage": 10, "system_temperature": None, "monitored_services": [],
+        }
+        def fixture_read(path):
+            return 'PRETTY_NAME="Fixture OS"' if path == "/etc/os-release" else "1234 0"
+        with ExitStack() as stack:
+            for name, value in fixtures.items():
+                stack.enter_context(patch.object(agent, name, return_value=value))
+            stack.enter_context(patch.object(agent, "read", side_effect=lambda path, *_args: fixture_read(path)))
+            stack.enter_context(patch.object(agent.shutil, "which", return_value="/usr/bin/docker"))
+            stack.enter_context(patch.object(agent, "docker_containers",
+                                            side_effect=RuntimeError("Docker status check failed")))
+            data = agent.stats()
+        self.assertTrue(data["online"])
+        self.assertEqual(data["containers"], [])
+        self.assertEqual(data["docker_status"], "error")
+        self.assertEqual(data["error"], "Docker status check failed")
+
+    def test_stats_keeps_healthy_and_absent_docker_collectors_green(self):
+        base = {
+            "memory": (16 * 2**30, 30), "storage_details": [],
+            "cpu_details": ("Fixture CPU", "4C / 8T"), "gpu_details": ("Fixture GPU", 20),
+            "gpu_vram": (2 * 2**30, 8 * 2**30), "io_rates": ("1 MB/s", "2 MB/s", "3 MB/s", "4 MB/s"),
+            "cpu_usage": 10, "system_temperature": None, "monitored_services": [],
+            "docker_containers": [],
+        }
+        for which, status in (("/usr/bin/docker", "ok"), (None, "absent")):
+            with self.subTest(which=which):
+                def fixture_read(path):
+                    return 'PRETTY_NAME="Fixture OS"' if path == "/etc/os-release" else "1234 0"
+                with ExitStack() as stack:
+                    for name, value in base.items():
+                        stack.enter_context(patch.object(agent, name, return_value=value))
+                    stack.enter_context(patch.object(agent, "read", side_effect=lambda path, *_args: fixture_read(path)))
+                    stack.enter_context(patch.object(agent.shutil, "which", return_value=which))
+                    data = agent.stats()
+                self.assertTrue(data["online"])
+                self.assertEqual(data["containers"], [])
+                self.assertEqual(data["docker_status"], status)
+                self.assertNotIn("error", data)
+
 
 class AgentCacheTests(unittest.TestCase):
     def test_cache_expires_and_caches_failures_without_old_online_data(self):

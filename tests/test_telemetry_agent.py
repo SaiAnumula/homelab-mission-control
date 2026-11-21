@@ -344,6 +344,52 @@ class ContainerAndIoTests(unittest.TestCase):
             self.assertIn("B/s", tx)
 
 
+class DockerCollectorStatusTests(unittest.TestCase):
+    """A broken Docker collector must fail loudly, not read as zero containers."""
+
+    @patch.object(telemetry_agent.shutil, "which", return_value=None)
+    @patch.object(telemetry_agent.subprocess, "run")
+    def test_host_without_docker_reports_an_empty_inventory(self, run, _which):
+        self.assertEqual(telemetry_agent.docker_containers(), [])
+        run.assert_not_called()
+
+    @patch.object(telemetry_agent.shutil, "which", return_value="/usr/bin/docker")
+    @patch.object(telemetry_agent.subprocess, "run")
+    def test_healthy_daemon_with_zero_containers_is_not_an_error(self, run, _which):
+        run.return_value = Completed("", 0)
+        self.assertEqual(telemetry_agent.docker_containers(), [])
+
+    @patch.object(telemetry_agent.shutil, "which", return_value="/usr/bin/docker")
+    @patch.object(telemetry_agent.subprocess, "run")
+    def test_daemon_failure_raises_instead_of_returning_empty(self, run, _which):
+        run.return_value = Completed("Cannot connect to the Docker daemon at unix:///private/socket", 1)
+        with self.assertRaises(RuntimeError) as raised:
+            telemetry_agent.docker_containers()
+        self.assertIn("Docker status check failed", str(raised.exception))
+        self.assertNotIn("private", str(raised.exception))
+
+    @patch.object(telemetry_agent.shutil, "which", return_value="/usr/bin/docker")
+    @patch.object(telemetry_agent.subprocess, "run")
+    def test_timeout_and_transport_failures_raise(self, run, _which):
+        for error in (subprocess.TimeoutExpired(["docker"], 4), OSError("private spawn failure")):
+            with self.subTest(error=type(error).__name__):
+                run.side_effect = error
+                with self.assertRaises(RuntimeError) as raised:
+                    telemetry_agent.docker_containers()
+                self.assertIn("Docker status check", str(raised.exception))
+                self.assertNotIn("private", str(raised.exception))
+
+    @patch.object(telemetry_agent.shutil, "which", return_value="/usr/bin/docker")
+    @patch.object(telemetry_agent.subprocess, "run")
+    def test_malformed_output_raises_instead_of_returning_empty(self, run, _which):
+        for stdout in ('{"Names": "web"\n', '"not an object"\n'):
+            with self.subTest(stdout=stdout):
+                run.return_value = Completed(stdout, 0)
+                with self.assertRaises(RuntimeError) as raised:
+                    telemetry_agent.docker_containers()
+                self.assertIn("Docker status check returned invalid data", str(raised.exception))
+
+
 class AgentHandlerRoutingTests(unittest.TestCase):
     def test_do_get_query_string_routing(self):
         import io
