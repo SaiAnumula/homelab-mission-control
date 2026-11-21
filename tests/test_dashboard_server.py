@@ -1,6 +1,8 @@
 from tests import safety  # noqa: F401; deny live I/O in targeted test runs
 
+import io
 import unittest
+from urllib.error import URLError
 from unittest.mock import patch
 
 from deploy import dashboard_server
@@ -18,6 +20,27 @@ class AggregateDevicesTests(unittest.TestCase):
 
 
 class FetchDeviceEndpointTests(unittest.TestCase):
+    def test_transient_timeout_preserves_degraded_status(self):
+        device = {"id": "node", "name": "Node", "endpoint": "http://node.example"}
+        payload = b'{"online":true,"services":[{"name":"Fixture","state":"inactive"}]}'
+        for error in (TimeoutError("private endpoint"), URLError(TimeoutError("private endpoint"))):
+            with self.subTest(error=type(error)):
+                with patch.object(
+                    dashboard_server, "open_endpoint", side_effect=[error, io.BytesIO(payload)],
+                ) as request, self.assertLogs(dashboard_server.LOGGER, level="WARNING") as logs:
+                    result = dashboard_server.fetch_device(device)
+                self.assertEqual(result["status"], "degraded")
+                self.assertEqual([call.kwargs["timeout"] for call in request.call_args_list], [4, 3])
+                self.assertNotIn("private endpoint", str(logs.output))
+
+    def test_persistent_timeout_only_retries_once(self):
+        device = {"id": "node", "name": "Node", "endpoint": "http://node.example"}
+        with patch.object(dashboard_server, "open_endpoint", side_effect=TimeoutError) as request, \
+                self.assertLogs(dashboard_server.LOGGER, level="WARNING"):
+            result = dashboard_server.fetch_device(device)
+        self.assertFalse(result["online"])
+        self.assertEqual(request.call_count, 2)
+
     def test_reachable_agent_endpoint_merges_stats_into_device(self):
         import io
         device = {"id": "node", "name": "Node", "endpoint": "http://node.example"}

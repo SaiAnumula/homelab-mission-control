@@ -2,6 +2,7 @@
 """Static Mission Control host and remote telemetry aggregator."""
 
 import json
+import logging
 import math
 import os
 import threading
@@ -18,6 +19,7 @@ ROOT = Path(__file__).resolve().parent
 DEVICES = Path(os.environ.get("MISSION_CONTROL_DEVICES", ROOT / "devices.json"))
 DIST = ROOT / "dist"
 MAX_FETCH_WORKERS = 8
+LOGGER = logging.getLogger(__name__)
 
 
 HEALTHY_CHECK_SECONDS = 10
@@ -146,6 +148,14 @@ def open_endpoint(request, timeout):
         raise
 
 
+def read_stats(request, timeout):
+    with open_endpoint(request, timeout=timeout) as response:
+        body = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise ValueError("Telemetry response exceeds size limit")
+    return validate_stats(json.loads(body, parse_constant=reject_constant))
+
+
 def fetch_device(device):
     raw_endpoint = (device.get("endpoint") or "").strip().rstrip("/")
     if not raw_endpoint:
@@ -157,11 +167,13 @@ def fetch_device(device):
         endpoint = raw_endpoint
     try:
         request = urllib.request.Request(f"{endpoint}/api/agent/stats")
-        with open_endpoint(request, timeout=4) as response:
-            body = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(body) > MAX_RESPONSE_BYTES:
-                raise ValueError("Telemetry response exceeds size limit")
-            stats = validate_stats(json.loads(body, parse_constant=reject_constant))
+        try:
+            stats = read_stats(request, timeout=4)
+        except (TimeoutError, urllib.error.URLError) as error:
+            if not isinstance(getattr(error, "reason", error), TimeoutError):
+                raise
+            LOGGER.warning("Telemetry request timed out for device %r; retrying once", device.get("id"))
+            stats = read_stats(request, timeout=3)
         return {**public_device(device), **stats, "status": telemetry_status(stats),
                 "checkedAt": datetime.now(timezone.utc).isoformat()}
     except ValueError as error:
