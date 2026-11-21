@@ -1,6 +1,12 @@
-// Import-safe telemetry helpers. Tests inject collectors; this module never probes hosts.
+// Import-safe telemetry helpers. Nothing runs at import time; tests inject collectors and commands.
 import { performance } from 'node:perf_hooks'
 import { setInterval, clearInterval } from 'node:timers'
+import { execFile as execFileCallback } from 'node:child_process'
+import { promisify } from 'node:util'
+import fs from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
+import path from 'node:path'
+const execFileAsync = promisify(execFileCallback)
 const fields = (value, names) => Object.fromEntries(names.filter(key => value?.[key] !== undefined).map(key => {
   if (value[key] !== null && !['string', 'number', 'boolean'].includes(typeof value[key])) throw new Error('Invalid telemetry field')
   return [key, value[key]]
@@ -108,6 +114,46 @@ export async function fetchTelemetry(url, { fetchFn = fetch, timeouts = [4000, 3
     }
   }
   throw error
+}
+
+export const DOCKER_PROBE_TIMEOUT_MS = 4000
+
+// Optional Docker monitoring mirrors agent/telemetry_agent.py: an absent CLI is
+// a supported configuration, but an installed Docker whose daemon cannot be
+// read must stay visible. systeminformation resolves an unreachable daemon to
+// [] instead of rejecting, so the Node collector probes the CLI directly with
+// a bounded command and maps every failure to a fixed, sanitized message.
+export async function dockerCliInstalled({ env = process.env } = {}) {
+  const name = process.platform === 'win32' ? 'docker.exe' : 'docker'
+  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue
+    try {
+      await fs.access(path.join(dir, name), fsConstants.X_OK)
+      return true
+    } catch { /* keep searching PATH */ }
+  }
+  return false
+}
+
+export async function collectDockerContainers({ exec = execFileAsync, env = process.env, timeout = DOCKER_PROBE_TIMEOUT_MS } = {}) {
+  let stdout
+  try {
+    ({ stdout } = await exec('docker', ['ps', '-a', '--format', '{{json .}}'], { timeout, env }))
+  } catch (error) {
+    if (error?.killed || error?.code === 'ETIMEDOUT') throw new Error('Docker status check timed out', { cause: error })
+    if (error?.code === 'ENOENT') throw new Error('Docker status check failed to run', { cause: error })
+    throw new Error('Docker status check failed', { cause: error })
+  }
+  const containers = []
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue
+    let item
+    try { item = JSON.parse(line) } catch { throw new Error('Docker status check returned invalid data') }
+    if (!object(item) || [item.Names, item.State, item.Status].some(value => typeof value !== 'string')) throw new Error('Docker status check returned invalid data')
+    const health = item.Status.includes('(healthy)') ? 'healthy' : item.Status.includes('(unhealthy)') ? 'unhealthy' : item.Status.includes('(health: starting)') ? 'starting' : null
+    containers.push({ name: item.Names, state: item.State.toLowerCase(), status: item.Status, health })
+  }
+  return containers
 }
 
 const HEALTHY_CHECK_MS = 10000
