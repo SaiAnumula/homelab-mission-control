@@ -63,6 +63,53 @@ export async function collectDevices(devices, collect, now = () => new Date().to
   }))
 }
 
+// Byte ceilings matching the Python dashboard: 1 MiB stats, 16 KiB health.
+export const MAX_TELEMETRY_BYTES = 1024 * 1024
+export const MAX_HEALTH_BYTES = 16 * 1024
+
+export async function readJson(response, maxBytes) {
+  let bytes
+  const reader = response.body?.getReader?.()
+  if (reader) {
+    const chunks = []
+    let received = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      received += value.byteLength
+      if (received > maxBytes) {
+        // Stop reading and release the connection instead of buffering a huge body.
+        await reader.cancel().catch(() => {})
+        throw new Error('Telemetry response exceeds size limit')
+      }
+      chunks.push(value)
+    }
+    let offset = 0
+    bytes = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0))
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+  } else {
+    bytes = new TextEncoder().encode(await response.text())
+    if (bytes.byteLength > maxBytes) throw new Error('Telemetry response exceeds size limit')
+  }
+  return JSON.parse(new TextDecoder().decode(bytes))
+}
+
+export async function fetchTelemetry(url, { fetchFn = fetch, timeouts = [4000, 3000], maxBytes = MAX_TELEMETRY_BYTES, headers = {}, timeoutSignal = ms => AbortSignal.timeout(ms) } = {}) {
+  let error
+  for (let attempt = 0; attempt < timeouts.length; attempt++) {
+    try {
+      const response = await fetchFn(url, { signal: timeoutSignal(timeouts[attempt]), redirect: 'error', headers })
+      if (!response.ok) throw new Error('Telemetry unavailable')
+      return await readJson(response, maxBytes)
+    } catch (caught) {
+      error = caught
+      // Only a timeout retries, exactly once; other failures surface immediately.
+      if (caught?.name !== 'TimeoutError' || attempt === timeouts.length - 1) throw error
+    }
+  }
+  throw error
+}
+
 const HEALTHY_CHECK_MS = 10000
 // Failing devices retry quickly at first, then settle at a fixed slower rate.
 const FAST_RETRY_MS = 1000

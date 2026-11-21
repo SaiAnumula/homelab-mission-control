@@ -1,4 +1,4 @@
-import { createDeviceMonitor, createCachedCollector, validateDevices } from './telemetry.js'
+import { createDeviceMonitor, createCachedCollector, fetchTelemetry, MAX_HEALTH_BYTES, validateDevices } from './telemetry.js'
 import express from 'express'
 import si from 'systeminformation'
 import fs from 'node:fs/promises'
@@ -169,22 +169,18 @@ const deviceMonitor = createDeviceMonitor({
   collect: async (device, index) => {
     if (device.endpoint === 'local') return cachedLocalStats()
     if (device.endpoint === 'demo') return demoStats(device, index)
-    const response = await fetch(`${device.endpoint.replace(/\/$/, '')}/api/agent/stats`, {
-      signal: AbortSignal.timeout(4000),
-      redirect: 'error',
+    return fetchTelemetry(`${device.endpoint.replace(/\/$/, '')}/api/agent/stats`, {
       headers: device.token ? { Authorization: `Bearer ${device.token}` } : {},
     })
-    if (!response.ok) throw new Error('Telemetry unavailable')
-    return response.json()
   },
   health: async device => {
     if (['local', 'demo'].includes(device.endpoint)) return null
     try {
-      const response = await fetch(`${device.endpoint.replace(/\/$/, '')}/api/health`, {
-        signal: AbortSignal.timeout(1000), redirect: 'error',
+      const payload = await fetchTelemetry(`${device.endpoint.replace(/\/$/, '')}/api/health`, {
+        timeouts: [1000], maxBytes: MAX_HEALTH_BYTES,
         headers: device.token ? { Authorization: `Bearer ${device.token}` } : {},
       })
-      return response.ok && (await response.json()).ok === true
+      return payload?.ok === true
     } catch { return false }
   },
 })
