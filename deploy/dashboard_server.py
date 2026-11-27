@@ -361,11 +361,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": str(error)}, status=503)
         if path == "/api" or path.startswith("/api/"):
             return self.send_json({"error": "Not found"}, status=404)
-        if not path.startswith("/assets/"):
-            dist_root = DIST.resolve()
-            candidate = (dist_root / path.lstrip("/")).resolve()
-            if not candidate.is_relative_to(dist_root) or not candidate.is_file():
-                self.path = "/index.html"
+        dist_root = DIST.resolve()
+        candidate = (dist_root / path.lstrip("/")).resolve()
+        if not candidate.is_relative_to(dist_root):
+            if path.startswith("/assets/"):
+                return self.send_error(404)
+            self.path = "/index.html"
+        elif not path.startswith("/assets/") and not candidate.is_file():
+            self.path = "/index.html"
         return super().do_GET()
 
     def send_json(self, payload, status=200):

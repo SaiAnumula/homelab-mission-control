@@ -124,6 +124,59 @@ class DashboardHandlerRoutingTests(unittest.TestCase):
         self.assertEqual(handler.path, "/index.html")
         super_get.assert_called_once()
 
+    def test_asset_traversal_path_returns_404(self):
+        from unittest.mock import Mock
+        handler = object.__new__(dashboard_server.Handler)
+        handler.path = "/assets/../../etc/passwd"
+        handler.send_error = Mock()
+        with patch.object(dashboard_server.SimpleHTTPRequestHandler, "do_GET", return_value=None) as super_get:
+            handler.do_GET()
+        handler.send_error.assert_called_once_with(404)
+        super_get.assert_not_called()
+
+    def test_legitimate_asset_is_served_and_symlink_escapes_are_blocked(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            dist = tmp_root / "dist"
+            assets = dist / "assets"
+            assets.mkdir(parents=True)
+            (assets / "app.js").write_text("console.log('ok');")
+            outside = tmp_root / "secret.txt"
+            outside.write_text("secret")
+            (assets / "escape.js").symlink_to(outside)
+            (dist / "escape.html").symlink_to(outside)
+
+            with patch.object(dashboard_server, "DIST", dist):
+                # Legitimate asset passes through unchanged
+                ok_handler = object.__new__(dashboard_server.Handler)
+                ok_handler.path = "/assets/app.js"
+                ok_handler.send_error = Mock()
+                with patch.object(dashboard_server.SimpleHTTPRequestHandler, "do_GET", return_value=None) as super_get:
+                    ok_handler.do_GET()
+                self.assertEqual(ok_handler.path, "/assets/app.js")
+                ok_handler.send_error.assert_not_called()
+                super_get.assert_called_once()
+
+                # Asset symlink escaping DIST returns 404
+                asset_esc = object.__new__(dashboard_server.Handler)
+                asset_esc.path = "/assets/escape.js"
+                asset_esc.send_error = Mock()
+                with patch.object(dashboard_server.SimpleHTTPRequestHandler, "do_GET", return_value=None) as super_get:
+                    asset_esc.do_GET()
+                asset_esc.send_error.assert_called_once_with(404)
+                super_get.assert_not_called()
+
+                # Non-asset symlink escaping DIST rewrites to /index.html
+                root_esc = object.__new__(dashboard_server.Handler)
+                root_esc.path = "/escape.html"
+                with patch.object(dashboard_server.SimpleHTTPRequestHandler, "do_GET", return_value=None) as super_get:
+                    root_esc.do_GET()
+                self.assertEqual(root_esc.path, "/index.html")
+                super_get.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
