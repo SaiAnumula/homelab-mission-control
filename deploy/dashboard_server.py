@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import socket
 import threading
 import time
 import urllib.error
@@ -169,8 +170,8 @@ def fetch_device(device):
         request = urllib.request.Request(f"{endpoint}/api/agent/stats")
         try:
             stats = read_stats(request, timeout=4)
-        except (TimeoutError, urllib.error.URLError) as error:
-            if not isinstance(getattr(error, "reason", error), TimeoutError):
+        except (TimeoutError, socket.timeout, urllib.error.URLError) as error:
+            if not isinstance(getattr(error, "reason", error), (TimeoutError, socket.timeout)):
                 raise
             LOGGER.warning("Telemetry request timed out for device %r; retrying once", device.get("id"))
             stats = read_stats(request, timeout=3)
@@ -360,8 +361,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": str(error)}, status=503)
         if path == "/api" or path.startswith("/api/"):
             return self.send_json({"error": "Not found"}, status=404)
-        if not path.startswith("/assets/") and not (DIST / path.lstrip("/")).is_file():
-            self.path = "/index.html"
+        if not path.startswith("/assets/"):
+            dist_root = DIST.resolve()
+            candidate = (dist_root / path.lstrip("/")).resolve()
+            if not candidate.is_relative_to(dist_root) or not candidate.is_file():
+                self.path = "/index.html"
         return super().do_GET()
 
     def send_json(self, payload, status=200):

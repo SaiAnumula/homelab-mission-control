@@ -6,13 +6,16 @@ on:
 
 jobs:
   python-tests:
-    name: Python telemetry agent tests
+    name: Python telemetry agent tests (${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Check Python syntax and warnings
         run: python -W error -m compileall -q agent deploy tests
       # Standard library tests forbid real monitoring and subprocess operations.
@@ -28,6 +31,19 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+      - name: Reject floating "latest" dependency pins
+        run: |
+          node -e '
+            const pkg = require("./package.json");
+            const bad = [
+              ...Object.entries(pkg.dependencies || {}),
+              ...Object.entries(pkg.devDependencies || {}),
+            ].filter(([, v]) => v === "latest");
+            if (bad.length) {
+              console.error("Floating latest dependencies:", bad);
+              process.exit(1);
+            }
+          '
       - name: Install dependencies
         run: npm ci
       - name: Lint (warnings fail)

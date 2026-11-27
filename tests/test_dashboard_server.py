@@ -1,6 +1,7 @@
 from tests import safety  # noqa: F401; deny live I/O in targeted test runs
 
 import io
+import socket
 import unittest
 from urllib.error import URLError
 from unittest.mock import patch
@@ -23,7 +24,12 @@ class FetchDeviceEndpointTests(unittest.TestCase):
     def test_transient_timeout_preserves_degraded_status(self):
         device = {"id": "node", "name": "Node", "endpoint": "http://node.example"}
         payload = b'{"online":true,"services":[{"name":"Fixture","state":"inactive"}]}'
-        for error in (TimeoutError("private endpoint"), URLError(TimeoutError("private endpoint"))):
+        for error in (
+            TimeoutError("private endpoint"),
+            socket.timeout("private endpoint"),
+            URLError(TimeoutError("private endpoint")),
+            URLError(socket.timeout("private endpoint")),
+        ):
             with self.subTest(error=type(error)):
                 with patch.object(
                     dashboard_server, "open_endpoint", side_effect=[error, io.BytesIO(payload)],
@@ -109,6 +115,14 @@ class DashboardHandlerRoutingTests(unittest.TestCase):
         handler.send_json = Mock()
         handler.do_GET()
         handler.send_json.assert_called_once_with({"error": "Not found"}, status=404)
+
+    def test_spa_traversal_path_rewrites_to_index_html(self):
+        handler = object.__new__(dashboard_server.Handler)
+        handler.path = "/../etc/passwd"
+        with patch.object(dashboard_server.SimpleHTTPRequestHandler, "do_GET", return_value=None) as super_get:
+            handler.do_GET()
+        self.assertEqual(handler.path, "/index.html")
+        super_get.assert_called_once()
 
 
 if __name__ == "__main__":

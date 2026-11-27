@@ -11,8 +11,6 @@ const host = process.env.MISSION_CONTROL_HOST || process.env.HOST || '0.0.0.0'
 const port = Number(process.env.PORT || 4242)
 const devicesPath = path.resolve(process.env.MISSION_CONTROL_DEVICES || path.join(root, 'devices.json'))
 
-app.use(express.json())
-
 function formatRate(bytesPerSec) {
   if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return '0 B/s'
   if (bytesPerSec >= 1e9) return `${(bytesPerSec / 1e9).toFixed(1)} GB/s`
